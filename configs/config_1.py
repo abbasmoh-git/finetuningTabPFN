@@ -26,4 +26,6 @@ config_base["finetuning_hyperparams"] = {
     "extra_kwargs": {},  # any additional TabTune-specific kwargs, e.g. {"weight_decay": 0.01}
 }
 
+config_base["device"] = "cuda"  # set to "cpu" for local testing without GPU
+
 config_base["saving_path"] = "../results/finetuning_experiments/" + config_base["model"]

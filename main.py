@@ -345,7 +345,7 @@ def run_no_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config: di
     """TabPFN without fine-tuning (pure in-context learning)."""
     from tabpfn import TabPFNClassifier
 
-    clf = TabPFNClassifier(ignore_pretraining_limits=True)
+    clf = TabPFNClassifier(ignore_pretraining_limits=True, device=config.get("device", "cpu"))
 
     t0 = time.perf_counter()
     clf.fit(X_train, y_train)
@@ -388,6 +388,7 @@ def run_full_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config: 
         learning_rate=ft_cfg.get("learning_rate", 1e-5),
         num_epochs=ft_cfg.get("num_epochs", 10),
         batch_size=ft_cfg.get("batch_size", 32),
+        device=config.get("device", "cpu"),
         **ft_cfg.get("extra_kwargs", {}),
     )
 
