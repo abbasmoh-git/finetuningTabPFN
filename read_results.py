@@ -1,25 +1,38 @@
+"""
+read_results.py
+---------------
+Quick summary of all experiment results stored under results/.
+Prints one row per dataset/method with mean test metrics across folds/repeats.
+
+Usage (from repo root):
+    python read_results.py
+"""
+
 import pickle
 from pathlib import Path
 
-results_root = Path("../results/finetuning_experiments")
+results_root = Path("results/finetuning_experiments")
 
-print("dataset,method,test_accuracy,test_balanced_accuracy,test_roc_auc,test_logloss")
+header = (
+    f"{'dataset':<35} {'method':<20} "
+    f"{'acc':>6} {'bal_acc':>8} {'roc_auc':>8} {'logloss':>8}"
+)
+print(header)
+print("-" * len(header))
 
-for pkl_file in results_root.rglob("*.pkl"):
+for pkl_file in sorted(results_root.rglob("*.pkl")):
     with open(pkl_file, "rb") as f:
         results = pickle.load(f)
 
-    config = results["config"]
-    method = config["finetuning_method"]
-
-    dataset_name = [k for k in results.keys() if k != "config"][0]
-    test_metrics = results[dataset_name]["fold_1"]["test"]
-
-    print(
-        f"{dataset_name},"
-        f"{method},"
-        f"{test_metrics['accuracy']:.4f},"
-        f"{test_metrics['balanced_accuracy']:.4f},"
-        f"{test_metrics['roc_auc']:.4f},"
-        f"{test_metrics['logloss']:.4f}"
-    )
+    for dataset_name, entry in results.get("datasets", {}).items():
+        method = entry.get("method", "?")
+        summary = entry.get("summary", {}).get("test", {})
+        if not summary:
+            continue
+        print(
+            f"{dataset_name:<35} {method:<20} "
+            f"{summary['accuracy']['mean']:>6.4f} "
+            f"{summary['balanced_accuracy']['mean']:>8.4f} "
+            f"{summary['roc_auc']['mean']:>8.4f} "
+            f"{summary['logloss']['mean']:>8.4f}"
+        )

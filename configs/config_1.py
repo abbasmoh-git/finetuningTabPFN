@@ -28,4 +28,4 @@ config_base["finetuning_hyperparams"] = {
 
 config_base["device"] = "cuda"  # set to "cpu" for local testing without GPU
 
-config_base["saving_path"] = "../results/finetuning_experiments/" + config_base["model"]
+config_base["saving_path"] = "results/finetuning_experiments/" + config_base["model"]

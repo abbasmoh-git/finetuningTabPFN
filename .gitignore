@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+tabpfn_env/
+venv/
+env/
+
+# Large result binaries (keep CSVs, ignore pickles)
+results/**/*.pkl
+checkpoints/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
