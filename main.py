@@ -592,15 +592,31 @@ def main() -> None:
     print(f"Lite evaluation:   {args.lite}")
     print(f"{'='*55}\n")
 
-    results = {
-        "config": config,
-        "benchmark": {
-            "suite_id": suite_id,
-            "name": "TabArena / OpenML benchmark",
-            "task_ids": task_ids,
-        },
-        "datasets": {},
-    }
+    save_dir = Path(config["saving_path"]) / finetuning_method
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    checkpoint_file = save_dir / f"checkpoint_{suite_id}_{args.config}_{finetuning_method}.pkl"
+    results_file    = save_dir / f"results_suite_{suite_id}_{args.config}_{finetuning_method}.pkl"
+    csv_file        = save_dir / f"results_suite_{suite_id}_{args.config}_{finetuning_method}.csv"
+
+    # --- load checkpoint if it exists ---
+    if checkpoint_file.exists():
+        with open(checkpoint_file, "rb") as f:
+            results = pickle.load(f)
+        already_done = set(results["datasets"].keys())
+        print(f"  [checkpoint] resuming — {len(already_done)} dataset(s) already done: "
+              f"{', '.join(already_done)}\n")
+    else:
+        results = {
+            "config": config,
+            "benchmark": {
+                "suite_id": suite_id,
+                "name": "TabArena / OpenML benchmark",
+                "task_ids": task_ids,
+            },
+            "datasets": {},
+        }
+        already_done = set()
 
     for task_id in task_ids:
         try:
@@ -611,6 +627,11 @@ def main() -> None:
             print(f"  [skip] {e}")
             continue
 
+        # skip datasets already finished in a previous run
+        if dataset_name in already_done:
+            print(f"  [checkpoint] skipping {dataset_name} (already done)")
+            continue
+
         results["datasets"][dataset_name] = dataset_result
 
         test_summary = dataset_result["summary"]["test"]
@@ -618,13 +639,19 @@ def main() -> None:
         for metric, stats in test_summary.items():
             print(f"    {metric:>18}: mean={stats['mean']:.4f}  std={stats['std']:.4f}")
 
-    save_dir = Path(config["saving_path"]) / finetuning_method
-    pkl_file = save_results(
-        results, save_dir, f"results_suite_{suite_id}_{args.config}_{finetuning_method}.pkl"
-    )
-    csv_file = export_csv(
-        results, save_dir / f"results_suite_{suite_id}_{args.config}_{finetuning_method}.csv"
-    )
+        # --- save checkpoint after every dataset ---
+        with open(checkpoint_file, "wb") as f:
+            pickle.dump(results, f)
+        print(f"  [checkpoint] saved ({len(results['datasets'])} dataset(s) done)")
+
+    # --- final results ---
+    pkl_file = save_results(results, save_dir, results_file.name)
+    export_csv(results, csv_file)
+
+    # remove checkpoint now that everything is done
+    if checkpoint_file.exists():
+        checkpoint_file.unlink()
+        print("  [checkpoint] removed (run complete)")
 
     print(f"\nResults saved to: {pkl_file}")
     print(f"CSV exported to:  {csv_file}")
