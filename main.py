@@ -129,15 +129,22 @@ def get_benchmark_task_ids(suite_id: int, max_tasks: Optional[int] = None) -> li
     suite = openml.study.get_suite(suite_id)
     all_task_ids = list(suite.tasks)
 
-    classification_task_ids = []
+    classification_tasks = []  # list of (n_samples, task_id)
     for task_id in all_task_ids:
         task = openml.tasks.get_task(task_id)  # metadata only, no dataset download
         if task.task_type == "Supervised Classification":
-            classification_task_ids.append(task_id)
+            dataset = task.get_dataset()
+            n_samples = int(dataset.qualities.get("NumberOfInstances", 0))
+            classification_tasks.append((n_samples, task_id))
         else:
             print(f"  [skip] task {task_id} is '{task.task_type}', not classification")
-        if max_tasks is not None and len(classification_task_ids) >= max_tasks:
-            break
+
+    # sort smallest datasets first so short GPU sessions still complete many tasks
+    classification_tasks.sort(key=lambda x: x[0])
+    classification_task_ids = [task_id for _, task_id in classification_tasks]
+
+    if max_tasks is not None:
+        classification_task_ids = classification_task_ids[:max_tasks]
 
     return classification_task_ids
 
