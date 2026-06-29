@@ -618,18 +618,23 @@ def main() -> None:
         }
         already_done = set()
 
+    # build task_id -> dataset_name map from checkpoint for fast skipping
+    done_task_ids = {
+        entry["task_id"] for entry in results["datasets"].values()
+    }
+
     for task_id in task_ids:
+        # skip already completed tasks before loading anything
+        if task_id in done_task_ids:
+            print(f"  [checkpoint] skipping task {task_id} (already done)")
+            continue
+
         try:
             dataset_result, dataset_name = run_task(
                 task_id, finetuning_method, config, lite=args.lite
             )
         except UnsupportedTaskTypeError as e:
             print(f"  [skip] {e}")
-            continue
-
-        # skip datasets already finished in a previous run
-        if dataset_name in already_done:
-            print(f"  [checkpoint] skipping {dataset_name} (already done)")
             continue
 
         results["datasets"][dataset_name] = dataset_result
