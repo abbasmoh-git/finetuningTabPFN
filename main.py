@@ -91,6 +91,11 @@ def _parse_args() -> argparse.Namespace:
         "--lite", action="store_true",
         help="Lite evaluation mode: 1 fold / 1 repeat per task, for fast debugging.",
     )
+    parser.add_argument(
+        "--task_id", type=int, default=None,
+        help="Run a single OpenML task by ID (used for parallel cluster jobs). "
+             "When set, --max_tasks is ignored and no checkpoint is used.",
+    )
     return parser.parse_args()
 
 
@@ -588,6 +593,51 @@ def main() -> None:
     config["finetuning_method"] = finetuning_method
 
     suite_id = config.get("suite_id", 457)
+    save_dir = Path(config["saving_path"]) / finetuning_method
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # -----------------------------------------------------------------------
+    # SINGLE-TASK MODE: one job per dataset (used for parallel cluster runs)
+    # -----------------------------------------------------------------------
+    if args.task_id is not None:
+        print(f"\n{'='*55}")
+        print(f"Single-task mode:  task_id={args.task_id}")
+        print(f"Config:            {args.config}")
+        print(f"Finetuning method: {finetuning_method}")
+        print(f"Lite evaluation:   {args.lite}")
+        print(f"{'='*55}\n")
+
+        try:
+            dataset_result, dataset_name = run_task(
+                args.task_id, finetuning_method, config, lite=args.lite
+            )
+        except UnsupportedTaskTypeError as e:
+            print(f"  [skip] {e}")
+            return
+
+        results = {
+            "config": config,
+            "benchmark": {"suite_id": suite_id, "task_id": args.task_id},
+            "datasets": {dataset_name: dataset_result},
+        }
+
+        pkl_file = save_results(
+            results, save_dir, f"task_{args.task_id}_{finetuning_method}.pkl"
+        )
+        csv_file = save_dir / f"task_{args.task_id}_{finetuning_method}.csv"
+        export_csv(results, csv_file)
+
+        test_summary = dataset_result["summary"]["test"]
+        print(f"\n  [{dataset_name}] test summary:")
+        for metric, stats in test_summary.items():
+            print(f"    {metric:>18}: mean={stats['mean']:.4f}  std={stats['std']:.4f}")
+        print(f"\nResults saved to: {pkl_file}")
+        print(f"CSV exported to:  {csv_file}")
+        return
+
+    # -----------------------------------------------------------------------
+    # FULL-SUITE MODE: sequential run over all tasks (with checkpoint)
+    # -----------------------------------------------------------------------
     task_ids = get_benchmark_task_ids(suite_id, max_tasks=args.max_tasks)
 
     print(f"\n{'='*55}")
@@ -598,9 +648,6 @@ def main() -> None:
     print(f"Seed:              {args.seed}")
     print(f"Lite evaluation:   {args.lite}")
     print(f"{'='*55}\n")
-
-    save_dir = Path(config["saving_path"]) / finetuning_method
-    save_dir.mkdir(parents=True, exist_ok=True)
 
     checkpoint_file = save_dir / f"checkpoint_{suite_id}_{args.config}_{finetuning_method}.pkl"
     results_file    = save_dir / f"results_suite_{suite_id}_{args.config}_{finetuning_method}.pkl"
@@ -625,13 +672,9 @@ def main() -> None:
         }
         already_done = set()
 
-    # build task_id -> dataset_name map from checkpoint for fast skipping
-    done_task_ids = {
-        entry["task_id"] for entry in results["datasets"].values()
-    }
+    done_task_ids = {entry["task_id"] for entry in results["datasets"].values()}
 
     for task_id in task_ids:
-        # skip already completed tasks before loading anything
         if task_id in done_task_ids:
             print(f"  [checkpoint] skipping task {task_id} (already done)")
             continue
@@ -651,16 +694,13 @@ def main() -> None:
         for metric, stats in test_summary.items():
             print(f"    {metric:>18}: mean={stats['mean']:.4f}  std={stats['std']:.4f}")
 
-        # --- save checkpoint after every dataset ---
         with open(checkpoint_file, "wb") as f:
             pickle.dump(results, f)
         print(f"  [checkpoint] saved ({len(results['datasets'])} dataset(s) done)")
 
-    # --- final results ---
     pkl_file = save_results(results, save_dir, results_file.name)
     export_csv(results, csv_file)
 
-    # remove checkpoint now that everything is done
     if checkpoint_file.exists():
         checkpoint_file.unlink()
         print("  [checkpoint] removed (run complete)")
