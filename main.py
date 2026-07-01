@@ -74,7 +74,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--finetuning_method", type=str, default=None,
-        choices=["no_finetuning", "full_finetuning"],
+        choices=["no_finetuning", "full_finetuning", "tabicl_no_finetuning"],
         help="Override the finetuning_method from the config.",
     )
     parser.add_argument(
@@ -383,6 +383,36 @@ def run_no_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config: di
     }
 
 
+def run_no_finetuning_tabicl(X_train, y_train, X_val, y_val, X_test, y_test, config: dict) -> dict:
+    """TabICL v2 without fine-tuning (pure in-context learning)."""
+    from tabicl import TabICLClassifier
+
+    clf = TabICLClassifier(device=config.get("device", "cpu"))
+
+    t0 = time.perf_counter()
+    clf.fit(X_train, y_train)
+    training_time = time.perf_counter() - t0
+
+    def _eval(X, y):
+        t0 = time.perf_counter()
+        y_pred = clf.predict(X)
+        y_proba = clf.predict_proba(X)
+        inference_time = time.perf_counter() - t0
+        return compute_metrics(y, y_pred, y_proba), inference_time
+
+    train_metrics, _ = _eval(X_train, y_train)
+    val_metrics, _ = _eval(X_val, y_val)
+    test_metrics, test_inference_time = _eval(X_test, y_test)
+
+    return {
+        "train": train_metrics,
+        "validation": val_metrics,
+        "test": test_metrics,
+        "training_time": training_time,
+        "inference_time": test_inference_time,
+    }
+
+
 def run_full_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config: dict) -> dict:
     """TabPFN with full fine-tuning via TabTune."""
     from tabtune.TabularPipeline.pipeline import TabularPipeline
@@ -434,6 +464,8 @@ def run_experiment(X_train, y_train, X_val, y_val, X_test, y_test,
     """Dispatch to the correct runner."""
     if finetuning_method == "no_finetuning":
         return run_no_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config)
+    elif finetuning_method == "tabicl_no_finetuning":
+        return run_no_finetuning_tabicl(X_train, y_train, X_val, y_val, X_test, y_test, config)
     elif finetuning_method == "full_finetuning":
         return run_full_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config)
     else:
