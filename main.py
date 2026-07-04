@@ -555,11 +555,12 @@ def export_csv(results: dict, csv_path: Path) -> Path:
 # Per-task driver
 # ---------------------------------------------------------------------------
 
-def run_task(task_id: int, finetuning_method: str, config: dict, lite: bool):
-    """Run all required folds/repetitions for a single OpenML task, using
-    OpenML's official train/test split for every fold/repeat. A validation
-    split is carved out of the official training portion only (see
-    `carve_out_validation`) — the official test split is never touched.
+def run_task(task_id: int, finetuning_method: str, config: dict, lite: bool,
+             save_dir: Optional[Path] = None):
+    """Run all required folds/repetitions for a single OpenML task.
+
+    Saves a per-fold/repeat checkpoint after every completed run so that
+    interrupted jobs can resume without re-running finished folds.
 
     Returns (dataset_result_dict, dataset_name).
     """
@@ -570,18 +571,32 @@ def run_task(task_id: int, finetuning_method: str, config: dict, lite: bool):
     validation_fraction = config.get("validation_fraction", 0.2)
     validation_seed = config.get("validation_seed", 42)
 
-    runs = {}
+    # --- per-task fold checkpoint ---
+    fold_ckpt_file = None
+    if save_dir is not None:
+        fold_ckpt_file = save_dir / f"fold_checkpoint_task_{task_id}_{finetuning_method}.pkl"
+
+    if fold_ckpt_file is not None and fold_ckpt_file.exists():
+        with open(fold_ckpt_file, "rb") as f:
+            runs = pickle.load(f)
+        print(f"  [fold-checkpoint] resuming — {len(runs)} fold(s) already done")
+    else:
+        runs = {}
+
     for repeat in range(n_repeats):
         for fold in range(n_folds):
             run_key = f"repeat_{repeat}_fold_{fold}"
+
+            if run_key in runs:
+                print(f"  -> {run_key} [skipped, already done]")
+                continue
+
             print(f"  -> {run_key}")
 
             train_idx, test_idx = get_openml_splits(task, fold=fold, repeat=repeat)
             X_train_full, y_train_full = X.iloc[train_idx], y.iloc[train_idx]
             X_test_raw, y_test_raw = X.iloc[test_idx], y.iloc[test_idx]
 
-            # Carve validation out of the official TRAINING rows only;
-            # the official OpenML test split stays untouched.
             X_train_raw, X_val_raw, y_train_raw, y_val_raw = carve_out_validation(
                 X_train_full, y_train_full,
                 validation_fraction=validation_fraction,
@@ -602,6 +617,12 @@ def run_task(task_id: int, finetuning_method: str, config: dict, lite: bool):
             )
             runs[run_key] = fold_result
 
+            # save after every fold/repeat
+            if fold_ckpt_file is not None:
+                with open(fold_ckpt_file, "wb") as f:
+                    pickle.dump(runs, f)
+                print(f"  [fold-checkpoint] saved ({len(runs)}/{n_repeats * n_folds} folds done)")
+
     dataset_result = {
         "task_id": task_id,
         "method": finetuning_method,
@@ -610,6 +631,11 @@ def run_task(task_id: int, finetuning_method: str, config: dict, lite: bool):
             "test": summarize_results(runs, split="test"),
         },
     }
+
+    # remove fold checkpoint — task is complete
+    if fold_ckpt_file is not None and fold_ckpt_file.exists():
+        fold_ckpt_file.unlink()
+
     return dataset_result, dataset_name
 
 
@@ -641,7 +667,7 @@ def main() -> None:
 
         try:
             dataset_result, dataset_name = run_task(
-                args.task_id, finetuning_method, config, lite=args.lite
+                args.task_id, finetuning_method, config, lite=args.lite, save_dir=save_dir
             )
         except UnsupportedTaskTypeError as e:
             print(f"  [skip] {e}")
@@ -713,7 +739,7 @@ def main() -> None:
 
         try:
             dataset_result, dataset_name = run_task(
-                task_id, finetuning_method, config, lite=args.lite
+                task_id, finetuning_method, config, lite=args.lite, save_dir=save_dir
             )
         except UnsupportedTaskTypeError as e:
             print(f"  [skip] {e}")
