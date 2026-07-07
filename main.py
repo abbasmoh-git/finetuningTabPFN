@@ -74,7 +74,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--finetuning_method", type=str, default=None,
-        choices=["no_finetuning", "full_finetuning", "tabicl_no_finetuning"],
+        choices=["no_finetuning", "full_finetuning", "tabicl_no_finetuning", "own_finetuning"],
         help="Override the finetuning_method from the config.",
     )
     parser.add_argument(
@@ -353,6 +353,46 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray)
 # Model runners
 # ---------------------------------------------------------------------------
 
+def run_own_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config: dict) -> dict:
+    """TabPFN with own fine-tuning pipeline (inspired by TabICL)."""
+    from finetuning_engine import TabPFNFinetuner
+
+    ft_cfg = config.get("finetuning_hyperparams", {})
+    finetuner = TabPFNFinetuner(
+        epochs=ft_cfg.get("num_epochs", 20),
+        learning_rate=ft_cfg.get("learning_rate", 1e-5),
+        weight_decay=ft_cfg.get("weight_decay", 0.01),
+        freeze_feature_attn=ft_cfg.get("freeze_feature_attn", False),
+        freeze_row_attn=ft_cfg.get("freeze_row_attn", False),
+        freeze_decoder=ft_cfg.get("freeze_decoder", False),
+        device=config.get("device", "cpu"),
+        verbose=True,
+    )
+
+    t0 = time.perf_counter()
+    finetuner.fit(X_train, y_train, X_val, y_val)
+    training_time = time.perf_counter() - t0
+
+    def _eval(X, y):
+        t0 = time.perf_counter()
+        y_pred = finetuner.predict(X)
+        y_proba = finetuner.predict_proba(X)
+        inference_time = time.perf_counter() - t0
+        return compute_metrics(y, y_pred, y_proba), inference_time
+
+    train_metrics, _ = _eval(X_train, y_train)
+    val_metrics, _ = _eval(X_val, y_val)
+    test_metrics, test_inference_time = _eval(X_test, y_test)
+
+    return {
+        "train": train_metrics,
+        "validation": val_metrics,
+        "test": test_metrics,
+        "training_time": training_time,
+        "inference_time": test_inference_time,
+    }
+
+
 def run_no_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config: dict) -> dict:
     """TabPFN without fine-tuning (pure in-context learning)."""
     from tabpfn import TabPFNClassifier
@@ -468,6 +508,8 @@ def run_experiment(X_train, y_train, X_val, y_val, X_test, y_test,
         return run_no_finetuning_tabicl(X_train, y_train, X_val, y_val, X_test, y_test, config)
     elif finetuning_method == "full_finetuning":
         return run_full_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config)
+    elif finetuning_method == "own_finetuning":
+        return run_own_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config)
     else:
         raise ValueError(f"Unknown finetuning_method: '{finetuning_method}'")
 
