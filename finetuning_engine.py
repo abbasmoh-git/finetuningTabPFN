@@ -359,9 +359,9 @@ class TabPFNFinetuner:
         optimizer.zero_grad(set_to_none=True)
 
         # Forward pass: TabPFN sees all rows as x, only context labels as y
-        # Output shape: (n_query, 1, n_classes)
+        # Output shape: (n_query, 1, n_classes) — TabPFN only returns query predictions
         output = model(x_t, y_ctx_t, only_return_standard_out=True)
-        logits_query = output[n_ctx:, 0, :]  # (n_query, n_classes)
+        logits_query = output[:, 0, :]  # (n_query, n_classes)
 
         loss = nn.functional.cross_entropy(logits_query, y_query_t)
 
@@ -398,8 +398,9 @@ class TabPFNFinetuner:
             x_t = torch.tensor(X_all, dtype=torch.float32, device=self.device).unsqueeze(1)
             y_ctx_t = torch.tensor(y_train_enc, dtype=torch.long, device=self.device).unsqueeze(1)
 
+            # TabPFN output already contains only test-row predictions: (n_val, 1, n_classes)
             output = model(x_t, y_ctx_t, only_return_standard_out=True)
-            logits_val = output[len(X_train):, 0, :]  # (n_val, n_classes)
+            logits_val = output[:, 0, :]  # (n_val, n_classes)
             preds = logits_val.argmax(dim=-1).cpu().numpy()
 
         acc = float((preds == y_val_enc).mean())
