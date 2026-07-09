@@ -272,8 +272,10 @@ class TabPFNFinetuner:
             inference_precision=torch.float32,
         )
         # Dummy fit to download/load weights (TabPFN is lazy-loaded)
-        X_dummy = np.zeros((4, 2), dtype=np.float32)
-        y_dummy = np.array([0, 1, 0, 1])
+        # Must be non-constant, otherwise TabPFN raises TabPFNValidationError
+        rng = np.random.default_rng(0)
+        X_dummy = rng.standard_normal((10, 4)).astype(np.float32)
+        y_dummy = np.array([0, 1, 0, 1, 0, 1, 0, 1, 0, 1])
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             clf.fit(X_dummy, y_dummy)
