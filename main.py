@@ -272,23 +272,27 @@ def preprocess_features(X_train: pd.DataFrame, X_val: pd.DataFrame, X_test: pd.D
     X_val   = X_val.copy()
     X_test  = X_test.copy()
 
-    medians = X_train.median(numeric_only=True)
+    #Numeric
+    medians = X_train.median(numeric_only=True) # only tr median on val data NaN and test data NaN
     X_train = X_train.fillna(medians)
     X_val   = X_val.fillna(medians)
     X_test  = X_test.fillna(medians)
 
+    #Categoric
     cat_cols = X_train.select_dtypes(include=["object", "category"]).columns
     for col in cat_cols:
         le = LabelEncoder()
-        le.fit(X_train[col].astype(str))
+        le.fit(X_train[col].astype(str)) #encoder only fit for training data
         mapping = {cls: idx for idx, cls in enumerate(le.classes_)}
+        # z.B. {"Blau": 0, "Grün": 1, "Rot": 2}
 
         def _encode(series, mapping=mapping):
             return series.astype(str).map(lambda v: mapping.get(v, -1))
+            # unbekannte Werte → -1 (statt Crash), wenn im Val /Test etwas vorkam , was nicht im Training war , z.b.  Farbe Gelb 
 
         X_train[col] = _encode(X_train[col])
-        X_val[col]   = _encode(X_val[col])
-        X_test[col]  = _encode(X_test[col])
+        X_val[col]   = _encode(X_val[col])  # same mapping
+        X_test[col]  = _encode(X_test[col]) # same mapping
 
     return (
         X_train.to_numpy(dtype=np.float32),
@@ -353,13 +357,21 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray)
 # Model runners
 # ---------------------------------------------------------------------------
 
-def run_own_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config: dict) -> dict:
-    """TabPFN with own fine-tuning pipeline (inspired by TabICL)."""
+def run_own_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config: dict,
+                       plot_save_path: str = None) -> dict:
+    """TabPFN with own fine-tuning pipeline (inspired by TabICL).
+
+    Parameters
+    ----------
+    plot_save_path : str, optional
+        If given, save the loss/accuracy plot as a PNG to this path.
+        E.g. "results/plots/diabetes_repeat0_fold1.png"
+    """
     from finetuning_engine import TabPFNFinetuner
 
     ft_cfg = config.get("finetuning_hyperparams", {})
     finetuner = TabPFNFinetuner(
-        epochs=ft_cfg.get("num_epochs", 20),
+        epochs=ft_cfg.get("num_epochs", 200),
         learning_rate=ft_cfg.get("learning_rate", 1e-5),
         weight_decay=ft_cfg.get("weight_decay", 0.01),
         freeze_feature_attn=ft_cfg.get("freeze_feature_attn", False),
@@ -372,6 +384,11 @@ def run_own_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config: d
     t0 = time.perf_counter()
     finetuner.fit(X_train, y_train, X_val, y_val)
     training_time = time.perf_counter() - t0
+
+    # Save loss/accuracy plot if a path was given
+    if plot_save_path:
+        Path(plot_save_path).parent.mkdir(parents=True, exist_ok=True)
+        finetuner.plot_history(save_path=plot_save_path)
 
     def _eval(X, y):
         t0 = time.perf_counter()
@@ -390,6 +407,7 @@ def run_own_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config: d
         "test": test_metrics,
         "training_time": training_time,
         "inference_time": test_inference_time,
+        "history": finetuner.history,  # train_loss, val_loss, val_acc per epoch
     }
 
 
@@ -500,7 +518,8 @@ def run_full_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config: 
 
 
 def run_experiment(X_train, y_train, X_val, y_val, X_test, y_test,
-                    finetuning_method: str, config: dict) -> dict:
+                    finetuning_method: str, config: dict,
+                    plot_save_path: str = None) -> dict:
     """Dispatch to the correct runner."""
     if finetuning_method == "no_finetuning":
         return run_no_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config)
@@ -509,7 +528,8 @@ def run_experiment(X_train, y_train, X_val, y_val, X_test, y_test,
     elif finetuning_method == "full_finetuning":
         return run_full_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config)
     elif finetuning_method == "own_finetuning":
-        return run_own_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config)
+        return run_own_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config,
+                                  plot_save_path=plot_save_path)
     else:
         raise ValueError(f"Unknown finetuning_method: '{finetuning_method}'")
 
@@ -653,9 +673,16 @@ def run_task(task_id: int, finetuning_method: str, config: dict, lite: bool,
 
             X_train, X_val, X_test = preprocess_features(X_train_raw, X_val_raw, X_test_raw)
 
+            # Build plot path for own_finetuning (e.g. results/.../plots/task363629_repeat0_fold1.png)
+            plot_path = None
+            if finetuning_method == "own_finetuning":
+                plot_dir = Path(config.get("saving_path", "results")) / "plots"
+                plot_path = str(plot_dir / f"task{task_id}_{run_key}.png")
+
             fold_result = run_experiment(
                 X_train, y_train, X_val, y_val, X_test, y_test,
                 finetuning_method, config,
+                plot_save_path=plot_path,
             )
             runs[run_key] = fold_result
 

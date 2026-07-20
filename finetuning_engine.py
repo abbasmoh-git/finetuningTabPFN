@@ -48,6 +48,7 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.nn as nn
+import matplotlib.pyplot as plt
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from torch.optim import AdamW
@@ -148,6 +149,7 @@ class TabPFNFinetuner:
         self._label_encoder: Optional[LabelEncoder] = None
         self._model: Optional[nn.Module] = None
         self._clf = None  # fitted TabPFNClassifier for inference
+        self.history: dict = {}  # tracks train_loss, val_loss, val_acc per epoch
 
     # ------------------------------------------------------------------
     # Public API
@@ -188,16 +190,23 @@ class TabPFNFinetuner:
                 "Check your freeze_* flags."
             )
         optimizer = AdamW(trainable, lr=self.learning_rate, weight_decay=self.weight_decay)
+        #search for best parameter
+        #before that :plot which shows loss training loss and validation loss
         total_steps = self.epochs
         warmup_steps = max(1, int(total_steps * self.warmup_proportion))
         scheduler = CosineWarmupScheduler(optimizer, warmup_steps, total_steps)
 
         # 5. Baseline validation (before any weight update)
         model.eval()
-        best_val_acc = self._validate(model, X_train, y_enc, X_val, y_val_enc, n_classes)
+        best_val_acc, best_val_loss = self._validate(model, X_train, y_enc, X_val, y_val_enc, n_classes)
         best_state = copy.deepcopy(model.state_dict())
         if self.verbose:
-            print(f"  [finetune] baseline val_acc = {best_val_acc:.4f}")
+            print(f"  [finetune] baseline val_acc = {best_val_acc:.4f} | val_loss = {best_val_loss:.4f}")
+
+        # history tracking
+        train_losses: list[float] = []
+        val_losses:   list[float] = []
+        val_accs:     list[float] = []
 
         # 6. Training loop
         patience_counter = 0
@@ -205,24 +214,29 @@ class TabPFNFinetuner:
             model.train()
             t0 = time.perf_counter()
 
-            loss_val = self._train_epoch(
+            train_loss = self._train_epoch(
                 model, optimizer, X_train, y_enc, n_classes, epoch
             )
             scheduler.step()
 
             # Validate
             model.eval()
-            val_acc = self._validate(model, X_train, y_enc, X_val, y_val_enc, n_classes)
+            val_acc, val_loss = self._validate(model, X_train, y_enc, X_val, y_val_enc, n_classes)
             elapsed = time.perf_counter() - t0
+
+            # Save history
+            train_losses.append(train_loss)
+            val_losses.append(val_loss)
+            val_accs.append(val_acc)
 
             if self.verbose:
                 print(
                     f"  [finetune] epoch {epoch + 1:3d}/{self.epochs} | "
-                    f"loss={loss_val:.4f} | val_acc={val_acc:.4f} | "
-                    f"time={elapsed:.1f}s"
+                    f"train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | "
+                    f"val_acc={val_acc:.4f} | time={elapsed:.1f}s"
                 )
 
-            # Early stopping + best-model tracking
+            # Early stopping + best-model tracking (based on val_acc)
             if val_acc > best_val_acc + 1e-4:
                 best_val_acc = val_acc
                 best_state = copy.deepcopy(model.state_dict())
@@ -241,6 +255,13 @@ class TabPFNFinetuner:
         if self.verbose:
             print(f"  [finetune] best val_acc = {best_val_acc:.4f}")
 
+        # Store history for later plotting
+        self.history = {
+            "train_loss": train_losses,
+            "val_loss":   val_losses,
+            "val_acc":    val_accs,
+        }
+
         # 8. Build final inference estimator with fine-tuned weights
         self._clf = self._build_inference_clf(model, X_train, y_train)
         return self
@@ -257,11 +278,55 @@ class TabPFNFinetuner:
             raise RuntimeError("Call fit() before predict_proba().")
         return self._clf.predict_proba(X_test)
 
+    def plot_history(self, save_path: Optional[str] = None) -> None:
+        """Plot training loss and validation loss per epoch.
+
+        Shows whether the model is learning (loss going down) or overfitting
+        (train_loss goes down but val_loss goes up).
+
+        Parameters
+        ----------
+        save_path : str, optional
+            If given, save the plot as an image file (e.g. "loss_curve.png").
+            Otherwise the plot is shown interactively.
+        """
+        if not self.history:
+            raise RuntimeError("No history found. Call fit() first.")
+
+        epochs = range(1, len(self.history["train_loss"]) + 1)
+
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+        # Left: Loss curves
+        axes[0].plot(epochs, self.history["train_loss"], label="Train Loss", marker="o", markersize=3)
+        axes[0].plot(epochs, self.history["val_loss"],   label="Val Loss",   marker="o", markersize=3)
+        axes[0].set_xlabel("Epoch")
+        axes[0].set_ylabel("Cross-Entropy Loss")
+        axes[0].set_title("Training Loss vs. Validation Loss")
+        axes[0].legend()
+        axes[0].grid(True)
+
+        # Right: Validation accuracy
+        axes[1].plot(epochs, self.history["val_acc"], label="Val Accuracy", color="green", marker="o", markersize=3)
+        axes[1].set_xlabel("Epoch")
+        axes[1].set_ylabel("Accuracy")
+        axes[1].set_title("Validation Accuracy per Epoch")
+        axes[1].legend()
+        axes[1].grid(True)
+
+        plt.tight_layout()
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches="tight")
+            print(f"  [finetune] plot saved to {save_path}")
+        else:
+            plt.show()
+        plt.close()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _load_pretrained(self):
+    def _load_pretrained(self): # load per model , if you want to change model version for example
         """Load TabPFN, do a dummy fit to initialise weights, return (model, clf)."""
         from tabpfn import TabPFNClassifier
 
@@ -311,7 +376,7 @@ class TabPFNFinetuner:
         if self.verbose and frozen_count > 0:
             print(f"  [finetune] frozen {frozen_count} sub-module(s)")
 
-    def _make_meta_batch(
+    def _make_meta_batch( #flip the feature order for the dataset,it should work also, or removing some features, or as an own function( boah ich hab keine ahnung, only doing it for training) 
         self,
         X: np.ndarray,
         y: np.ndarray,
@@ -342,7 +407,7 @@ class TabPFNFinetuner:
         y_ctx_t = torch.tensor(y_ctx, dtype=torch.long, device=self.device).unsqueeze(1)
         y_query_t = torch.tensor(y_query, dtype=torch.long, device=self.device)
 
-        return x_t, y_ctx_t, y_query_t, len(ctx_idx)
+        return x_t, y_ctx_t, y_query_t, len(ctx_idx) # after this line you can do augmentation on that, if aug true, it returns aug , if false real data , for example adding noise, removing one feature or randomly (try these ideas, add to the thesis)
 
     def _train_epoch(
         self,
@@ -375,7 +440,7 @@ class TabPFNFinetuner:
             nn.utils.clip_grad_norm_(model.parameters(), self.grad_clip)
 
         optimizer.step()
-        return float(loss.detach().item())
+        return float(loss.detach().item()) 
 
     def _validate(
         self,
@@ -385,26 +450,28 @@ class TabPFNFinetuner:
         X_val: np.ndarray,
         y_val_enc: np.ndarray,
         n_classes: int,
-    ) -> float:
-        """Accuracy on val set using current model weights (no grad)."""
+    ) -> tuple[float, float]:
+        """Accuracy and loss on val set using current model weights (no grad).
+
+        Returns (val_acc, val_loss).
+        Train is used as context, val as query — same setup as in _train_epoch.
+        """
         with torch.no_grad():
-            x_t, y_ctx_t, _, n_ctx = self._make_meta_batch(
-                np.concatenate([X_train, X_val]),
-                np.concatenate([y_train_enc, np.zeros(len(y_val_enc), dtype=int)]),
-                epoch=999,
-            )
             # Use all training data as context, val as query
             X_all = np.concatenate([X_train, X_val], axis=0)
             x_t = torch.tensor(X_all, dtype=torch.float32, device=self.device).unsqueeze(1)
             y_ctx_t = torch.tensor(y_train_enc, dtype=torch.long, device=self.device).unsqueeze(1)
+            y_val_t = torch.tensor(y_val_enc, dtype=torch.long, device=self.device)
 
             # TabPFN output already contains only test-row predictions: (n_val, 1, n_classes)
             output = model(x_t, y_ctx_t, only_return_standard_out=True)
             logits_val = output[:, 0, :]  # (n_val, n_classes)
+
+            val_loss = float(nn.functional.cross_entropy(logits_val, y_val_t).item())
             preds = logits_val.argmax(dim=-1).cpu().numpy()
 
         acc = float((preds == y_val_enc).mean())
-        return acc
+        return acc, val_loss
 
     def _build_inference_clf(self, model: nn.Module, X_train: np.ndarray, y_train: np.ndarray):
         """Build a TabPFNClassifier that uses the fine-tuned model weights for prediction."""
@@ -426,3 +493,13 @@ class TabPFNFinetuner:
         clf.models_[0].load_state_dict(model.state_dict())
         clf.models_[0].eval()
         return clf
+ 
+ # summary :
+ # track val loss and training loss
+ # plotting val loss and training loss for one data set
+ # them you can see if its udnerfitting or overfitting
+ # different batch size and wheights ( oder so)
+ # try it on tabicl version 1 and 2 too
+ # maybe tabpfn version change also, because 3 is working well , or find a dataset which needs finetuning for version 3
+ # probably 200 epochs for plot ( be free) its only information you should handle this you know what he wants
+ # write config files , change dataset parameters finetuning etc. run the code with that config file (save some results per config file, and them plot them, different seed? i dont know what he mean)
