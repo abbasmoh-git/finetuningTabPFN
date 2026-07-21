@@ -190,8 +190,6 @@ class TabPFNFinetuner:
                 "Check your freeze_* flags."
             )
         optimizer = AdamW(trainable, lr=self.learning_rate, weight_decay=self.weight_decay)
-        #search for best parameter
-        #before that :plot which shows loss training loss and validation loss
         total_steps = self.epochs
         warmup_steps = max(1, int(total_steps * self.warmup_proportion))
         scheduler = CosineWarmupScheduler(optimizer, warmup_steps, total_steps)
@@ -326,7 +324,7 @@ class TabPFNFinetuner:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _load_pretrained(self): # load per model , if you want to change model version for example
+    def _load_pretrained(self):
         """Load TabPFN, do a dummy fit to initialise weights, return (model, clf)."""
         from tabpfn import TabPFNClassifier
 
@@ -376,7 +374,7 @@ class TabPFNFinetuner:
         if self.verbose and frozen_count > 0:
             print(f"  [finetune] frozen {frozen_count} sub-module(s)")
 
-    def _make_meta_batch( #flip the feature order for the dataset,it should work also, or removing some features, or as an own function( boah ich hab keine ahnung, only doing it for training) 
+    def _make_meta_batch(
         self,
         X: np.ndarray,
         y: np.ndarray,
@@ -407,7 +405,7 @@ class TabPFNFinetuner:
         y_ctx_t = torch.tensor(y_ctx, dtype=torch.long, device=self.device).unsqueeze(1)
         y_query_t = torch.tensor(y_query, dtype=torch.long, device=self.device)
 
-        return x_t, y_ctx_t, y_query_t, len(ctx_idx) # after this line you can do augmentation on that, if aug true, it returns aug , if false real data , for example adding noise, removing one feature or randomly (try these ideas, add to the thesis)
+        return x_t, y_ctx_t, y_query_t, len(ctx_idx)
 
     def _train_epoch(
         self,
@@ -493,13 +491,3 @@ class TabPFNFinetuner:
         clf.models_[0].load_state_dict(model.state_dict())
         clf.models_[0].eval()
         return clf
- 
- # summary :
- # track val loss and training loss
- # plotting val loss and training loss for one data set
- # them you can see if its udnerfitting or overfitting
- # different batch size and wheights ( oder so)
- # try it on tabicl version 1 and 2 too
- # maybe tabpfn version change also, because 3 is working well , or find a dataset which needs finetuning for version 3
- # probably 200 epochs for plot ( be free) its only information you should handle this you know what he wants
- # write config files , change dataset parameters finetuning etc. run the code with that config file (save some results per config file, and them plot them, different seed? i dont know what he mean)
