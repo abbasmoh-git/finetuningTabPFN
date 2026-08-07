@@ -19,7 +19,28 @@ TabPFN model structure (analogous to TabICL):
 Freezing flags:
   freeze_feature_attn : freeze all attn_between_features sub-modules
   freeze_row_attn     : freeze all attn_between_items sub-modules
+  freeze_mlp          : freeze all MLP (feed-forward) sub-modules
   freeze_decoder      : freeze the output decoder head
+  train_only_layers   : if set, only these transformer_encoder layer indices
+                        remain trainable (everything else -- other layers and
+                        the decoder -- is frozen), regardless of the flags
+                        above. Use this for layer-wise fine-tuning experiments
+                        (e.g. train_only_layers=[5] to test layer 5 alone).
+
+Verified against the actual TabPFN architecture (PriorLabs/TabPFN,
+architectures/base/layer.py + transformer.py):
+  PerFeatureEncoderLayer submodules -> self.self_attn_between_features,
+                                        self.self_attn_between_items,
+                                        self.mlp (and self.second_mlp)
+  PerFeatureTransformer             -> self.transformer_encoder.layers[i]
+                                        (nn.ModuleList of PerFeatureEncoderLayer)
+                                        self.decoder_dict (output head)
+So substring matching on "feature" / "item" / "mlp" / "decoder" in
+named_modules() reliably hits the right sub-modules. Note: this was verified
+against the TabPFN v2.6 / base architecture; if the cluster's `tabpfn` package
+resolves TabPFNv3 to a different architecture module, re-check by running
+`for n, _ in model.named_modules(): print(n)` once before trusting the freeze
+counts blindly.
 
 Usage
 -----
@@ -100,8 +121,15 @@ class TabPFNFinetuner:
     freeze_row_attn : bool
         If True, freeze all row-attention sub-modules
         (``attn_between_items`` across all layers).
+    freeze_mlp : bool
+        If True, freeze all MLP / feed-forward sub-modules
+        (``mlp`` and ``second_mlp`` across all layers).
     freeze_decoder : bool
         If True, freeze the output decoder head.
+    train_only_layers : list[int], optional
+        If given, only the transformer encoder layers at these indices remain
+        trainable; every other layer and the decoder are frozen, overriding
+        the freeze_* flags above. Used for layer-wise fine-tuning experiments.
     warmup_proportion : float
         Fraction of total steps used for LR warmup (same as TabICL).
     patience : int
@@ -125,7 +153,9 @@ class TabPFNFinetuner:
         grad_clip: float = 1.0,
         freeze_feature_attn: bool = False,
         freeze_row_attn: bool = False,
+        freeze_mlp: bool = False,
         freeze_decoder: bool = False,
+        train_only_layers: Optional[list[int]] = None,
         warmup_proportion: float = 0.1,
         patience: int = 8,
         device: str = "cuda",
@@ -139,7 +169,9 @@ class TabPFNFinetuner:
         self.grad_clip = grad_clip
         self.freeze_feature_attn = freeze_feature_attn
         self.freeze_row_attn = freeze_row_attn
+        self.freeze_mlp = freeze_mlp
         self.freeze_decoder = freeze_decoder
+        self.train_only_layers = train_only_layers
         self.warmup_proportion = warmup_proportion
         self.patience = patience
         self.device = device
@@ -350,20 +382,37 @@ class TabPFNFinetuner:
     def _apply_freezing(self, model: nn.Module) -> None:
         """Zero requires_grad on frozen sub-modules.
 
-        Component names in TabPFN (analogous to TabICL):
+        Component names in TabPFN (analogous to TabICL), verified against the
+        actual PriorLabs/TabPFN source (architectures/base/layer.py):
           - feature attention : sub-modules whose name contains 'feature'
+            (matches self.self_attn_between_features)
           - row/item attention : sub-modules whose name contains 'item' or 'row'
-          - decoder head      : sub-modules whose name contains 'decoder'
+            (matches self.self_attn_between_items)
+          - MLP                : sub-modules whose name contains 'mlp'
+            (matches self.mlp and self.second_mlp)
+          - decoder head       : sub-modules whose name contains 'decoder'
+            (matches self.decoder_dict)
+
+        If `train_only_layers` is set, it takes precedence: every parameter is
+        frozen except those belonging to transformer_encoder.layers[i] for i
+        in train_only_layers. This implements layer-wise fine-tuning (testing
+        which single encoder layer, or subset of layers, matters most) and
+        ignores the freeze_* flags above for the frozen/trainable decision.
 
         Call this AFTER moving the model to device but BEFORE creating the
         optimizer, so the optimizer only sees trainable parameters.
         """
+        if self.train_only_layers is not None:
+            self._apply_layerwise_freezing(model, self.train_only_layers)
+            return
+
         frozen_count = 0
         for name, module in model.named_modules():
             name_lower = name.lower()
             should_freeze = (
                 (self.freeze_feature_attn and "feature" in name_lower)
                 or (self.freeze_row_attn and ("item" in name_lower or "row" in name_lower))
+                or (self.freeze_mlp and "mlp" in name_lower)
                 or (self.freeze_decoder and "decoder" in name_lower)
             )
             if should_freeze:
@@ -371,8 +420,64 @@ class TabPFNFinetuner:
                     p.requires_grad = False
                 frozen_count += 1
 
-        if self.verbose and frozen_count > 0:
-            print(f"  [finetune] frozen {frozen_count} sub-module(s)")
+        if self.verbose:
+            if frozen_count > 0:
+                print(f"  [finetune] frozen {frozen_count} sub-module(s)")
+            elif self.freeze_feature_attn or self.freeze_row_attn or self.freeze_mlp or self.freeze_decoder:
+                # A freeze flag was requested but nothing matched -- almost
+                # certainly a naming mismatch with the installed TabPFN
+                # version, not "nothing to freeze". Fail loud instead of
+                # silently running full fine-tuning under a selective label.
+                warnings.warn(
+                    "A freeze_* flag was set but no sub-module name matched "
+                    "('feature' / 'item' / 'row' / 'mlp' / 'decoder'). This "
+                    "run is NOT selectively fine-tuning anything -- check "
+                    "`for n, _ in model.named_modules(): print(n)` against "
+                    "the installed tabpfn version."
+                )
+
+    def _apply_layerwise_freezing(self, model: nn.Module, train_only_layers: list) -> None:
+        """Freeze everything except the given transformer encoder layer indices.
+
+        Matches module names of the form 'transformer_encoder.layers.<i>' (the
+        PerFeatureEncoderLayer instances inside the encoder's nn.ModuleList)
+        and keeps only the requested indices trainable. All other parameters,
+        including the decoder head and any other layers, are frozen.
+        """
+        import re
+
+        target_indices = {int(i) for i in train_only_layers}
+        matched_indices = set()
+
+        # First, freeze everything.
+        for p in model.parameters():
+            p.requires_grad = False
+
+        # Then, re-enable gradients only for the requested layer indices.
+        for name, module in model.named_modules():
+            m = re.search(r"(?:^|\.)layers\.(\d+)(?:\.|$)", name)
+            if m and int(m.group(1)) in target_indices:
+                # Only unfreeze at the PerFeatureEncoderLayer level itself
+                # (name ends exactly at the index), not sub-matches, to avoid
+                # redundant work -- but unfreezing repeatedly is harmless, so
+                # this is a minor efficiency choice, not a correctness one.
+                for p in module.parameters():
+                    p.requires_grad = True
+                matched_indices.add(int(m.group(1)))
+
+        if self.verbose:
+            print(
+                f"  [finetune] layer-wise: training only layer(s) "
+                f"{sorted(matched_indices)} (requested: {sorted(target_indices)})"
+            )
+        missing = target_indices - matched_indices
+        if missing:
+            warnings.warn(
+                f"train_only_layers requested indices {sorted(missing)} but no "
+                "matching 'transformer_encoder.layers.<i>' sub-module was "
+                "found for them -- check the layer count of the installed "
+                "TabPFN model (e.g. `len(model.transformer_encoder.layers)`)."
+            )
 
     def _make_meta_batch(
         self,

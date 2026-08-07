@@ -376,7 +376,9 @@ def run_own_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config: d
         weight_decay=ft_cfg.get("weight_decay", 0.01),
         freeze_feature_attn=ft_cfg.get("freeze_feature_attn", False),
         freeze_row_attn=ft_cfg.get("freeze_row_attn", False),
+        freeze_mlp=ft_cfg.get("freeze_mlp", False),
         freeze_decoder=ft_cfg.get("freeze_decoder", False),
+        train_only_layers=ft_cfg.get("train_only_layers", None),
         device=config.get("device", "cpu"),
         verbose=True,
     )
