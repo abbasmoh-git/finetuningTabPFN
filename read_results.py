@@ -14,7 +14,7 @@ from pathlib import Path
 results_root = Path("results/finetuning_experiments")
 
 header = (
-    f"{'dataset':<35} {'method':<20} "
+    f"{'dataset':<35} {'experiment':<22} {'method':<15} "
     f"{'acc':>6} {'bal_acc':>8} {'roc_auc':>8} {'logloss':>8}"
 )
 print(header)
@@ -24,13 +24,23 @@ for pkl_file in sorted(results_root.rglob("*.pkl")):
     with open(pkl_file, "rb") as f:
         results = pickle.load(f)
 
+    # The pkl lives at results/finetuning_experiments/<experiment>/<method>/<file>.pkl
+    # <experiment> is the config's saving_path leaf, e.g. "attention_only",
+    # "mlp_only", "layerwise_layer0", "own_finetuning", "tabpfn_v3" (baseline).
+    # This is what actually tells apart your different freezing runs -- the
+    # "method" field alone is the same ("own_finetuning") for all of them.
+    try:
+        experiment = pkl_file.relative_to(results_root).parts[0]
+    except ValueError:
+        experiment = "?"
+
     for dataset_name, entry in results.get("datasets", {}).items():
         method = entry.get("method", "?")
         summary = entry.get("summary", {}).get("test", {})
         if not summary:
             continue
         print(
-            f"{dataset_name:<35} {method:<20} "
+            f"{dataset_name:<35} {experiment:<22} {method:<15} "
             f"{summary['accuracy']['mean']:>6.4f} "
             f"{summary['balanced_accuracy']['mean']:>8.4f} "
             f"{summary['roc_auc']['mean']:>8.4f} "
