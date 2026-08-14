@@ -131,6 +131,8 @@ class TabPFNFinetuner:
         device: str = "cuda",
         random_state: int = 42,
         verbose: bool = True,
+        n_estimators: int = 1,
+        inference_precision: torch.dtype = torch.float32,
     ):
         self.epochs = epochs
         self.learning_rate = learning_rate
@@ -145,6 +147,8 @@ class TabPFNFinetuner:
         self.device = device
         self.random_state = random_state
         self.verbose = verbose
+        self.n_estimators = n_estimators
+        self.inference_precision = inference_precision
 
         self._label_encoder: Optional[LabelEncoder] = None
         self._model: Optional[nn.Module] = None
@@ -332,7 +336,8 @@ class TabPFNFinetuner:
             device=self.device,
             ignore_pretraining_limits=True,
             fit_mode="fit_preprocessors",
-            inference_precision=torch.float32,
+            n_estimators=self.n_estimators,
+            inference_precision=self.inference_precision,
         )
         # Dummy fit to download/load weights (TabPFN is lazy-loaded)
         # Must be non-constant, otherwise TabPFN raises TabPFNValidationError
@@ -471,18 +476,90 @@ class TabPFNFinetuner:
         acc = float((preds == y_val_enc).mean())
         return acc, val_loss
 
+    @classmethod
+    def from_model(
+        cls,
+        model: nn.Module,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        device: str = "cpu",
+        n_estimators: int = 1,
+        inference_precision: torch.dtype = torch.float32,
+        base_clf=None,
+    ) -> "TabPFNFinetuner":
+        """Wrap an existing model (e.g. quantized) for sklearn-compatible inference.
+
+        Skips training entirely. Unlike ``fit()``, this does a direct model
+        assignment rather than ``load_state_dict``, so it works for quantized
+        models whose state dict has a different format (int8 tensors, etc.).
+
+        Parameters
+        ----------
+        model : nn.Module
+            A pretrained or quantized TabPFN model (already in eval mode).
+        X_train : np.ndarray
+            Training features — used as context during inference.
+        y_train : np.ndarray
+            Training labels — used as context during inference.
+        device : str
+            Compute device (must be ``"cpu"`` for quantized models).
+        n_estimators : int
+            Number of ensemble members passed to TabPFNClassifier.
+        inference_precision : torch.dtype
+            Precision used by TabPFNClassifier during inference.
+        base_clf : TabPFNClassifier, optional
+            A pre-fitted TabPFNClassifier to reuse (deepcopied internally).
+            Avoids reloading pretrained weights from disk on every call —
+            useful when wrapping multiple models in a loop.
+        """
+        from tabpfn import TabPFNClassifier
+
+        instance = cls.__new__(cls)
+        instance.device = device
+        instance.n_estimators = n_estimators
+        instance.inference_precision = inference_precision
+        instance._model = model.eval()
+        instance._label_encoder = None
+        instance.history = {}
+
+        if base_clf is not None:
+            clf = copy.deepcopy(base_clf)
+        else:
+            clf = TabPFNClassifier(
+                device=device,
+                ignore_pretraining_limits=True,
+                fit_mode="fit_preprocessors",
+                n_estimators=n_estimators,
+                inference_precision=inference_precision,
+            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                clf.fit(X_train, y_train)
+
+        # Inject weights in-place so TabPFN's inference executor sees the change.
+        # load_state_dict works for float32 models (including simulated N-bit quantization).
+        # For true int8 quantized models (quantize_dynamic) the state dict is incompatible,
+        # so we fall back to element replacement in the existing list.
+        try:
+            clf.models_[0].load_state_dict(model.state_dict())
+            clf.models_[0].eval()
+        except (RuntimeError, TypeError):
+            clf.models_[0] = model.eval()
+
+        instance._clf = clf
+        return instance
+
     def _build_inference_clf(self, model: nn.Module, X_train: np.ndarray, y_train: np.ndarray):
         """Build a TabPFNClassifier that uses the fine-tuned model weights for prediction."""
         from tabpfn import TabPFNClassifier
-        from tabpfn.base import ClassifierModelSpecs
 
         clf = TabPFNClassifier(
             device=self.device,
             ignore_pretraining_limits=True,
             fit_mode="fit_preprocessors",
-            inference_precision=torch.float32,
+            n_estimators=self.n_estimators,
+            inference_precision=self.inference_precision,
         )
-        # Inject fine-tuned weights before fitting
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             clf.fit(X_train, y_train)
