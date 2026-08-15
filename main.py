@@ -379,6 +379,8 @@ def run_own_finetuning(X_train, y_train, X_val, y_val, X_test, y_test, config: d
         freeze_mlp=ft_cfg.get("freeze_mlp", False),
         freeze_decoder=ft_cfg.get("freeze_decoder", False),
         train_only_layers=ft_cfg.get("train_only_layers", None),
+        max_context_size=ft_cfg.get("max_context_size", None),
+        n_estimators=ft_cfg.get("n_estimators", 8),  # match baseline's TabPFNClassifier default
         device=config.get("device", "cpu"),
         verbose=True,
     )

@@ -26,6 +26,10 @@ config_base["finetuning_hyperparams"] = {
     "freeze_row_attn": False,
     "freeze_mlp": True,
     "freeze_decoder": True,
+    # See config_own_finetuning.py for why this exists -- same value used
+    # across all four fine-tuning variants to keep the method consistent.
+    "max_context_size": 3000,
+    "n_estimators": 8,
 }
 
 config_base["device"] = "cuda"

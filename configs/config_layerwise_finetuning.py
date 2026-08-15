@@ -24,6 +24,10 @@ config_base["finetuning_hyperparams"] = {
     "num_epochs": 200,
     "weight_decay": 0.01,
     "train_only_layers": [0],
+    # See config_own_finetuning.py for why this exists -- same value used
+    # across all four fine-tuning variants to keep the method consistent.
+    "max_context_size": 3000,
+    "n_estimators": 8,
 }
 
 config_base["device"] = "cuda"

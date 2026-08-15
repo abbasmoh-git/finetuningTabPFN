@@ -23,6 +23,16 @@ config_base["finetuning_hyperparams"] = {
     "freeze_feature_attn": False,
     "freeze_row_attn": False,
     "freeze_decoder": False,
+    # Caps rows per forward pass to avoid CUDA OOM on large datasets. A
+    # fresh random subset is drawn every epoch (not a fixed truncation),
+    # so the full dataset is still used over the course of training.
+    # Applied identically across all four fine-tuning variants so the
+    # method stays consistent across datasets. Datasets below this size
+    # are completely unaffected (identical behaviour to before).
+    "max_context_size": 3000,
+    # Must match the baseline's TabPFNClassifier default so both are
+    # compared under the same ensembling conditions at final inference.
+    "n_estimators": 8,
 }
 
 config_base["device"] = "cuda"

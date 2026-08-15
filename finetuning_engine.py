@@ -130,6 +130,22 @@ class TabPFNFinetuner:
         If given, only the transformer encoder layers at these indices remain
         trainable; every other layer and the decoder are frozen, overriding
         the freeze_* flags above. Used for layer-wise fine-tuning experiments.
+    max_context_size : int, optional
+        Upper bound on how many rows are fed through the model in a single
+        forward pass (context + query combined during training; context +
+        validation query during validation). ``None`` (default) disables
+        this and reproduces the original behaviour of always using every
+        row of the dataset in one pass -- fine for small/medium datasets,
+        but the memory of a single TabPFN forward+backward pass grows with
+        row count, and on datasets with many rows this can exceed GPU
+        memory even though plain inference (no gradients) on the same data
+        fits fine. When set and a dataset has more rows than this cap, a
+        *different* random subset of this size is drawn every epoch (and a
+        fixed random subset for validation), so no rows are permanently
+        discarded -- across the full training run the model still sees the
+        whole dataset, just never all of it in one pass at once. This is
+        the same idea as ordinary mini-batch training, not a reduction of
+        the dataset used for the experiment.
     warmup_proportion : float
         Fraction of total steps used for LR warmup (same as TabICL).
     patience : int
@@ -141,6 +157,15 @@ class TabPFNFinetuner:
         Seed for context/query splits.
     verbose : bool
         Print progress per epoch.
+    n_estimators : int
+        Number of TabPFN ensemble members used for the FINAL inference
+        classifier built after fit() (train/val/test predict/predict_proba).
+        Does not affect the training loop itself, which always fine-tunes a
+        single raw model. Default is 8 to match TabPFNClassifier's own
+        library default, which is what the no-fine-tuning baseline uses
+        (implicitly, since it never overrides n_estimators either) -- keep
+        this equal to the baseline's value so both are compared under the
+        same ensembling conditions.
     """
 
     def __init__(
@@ -156,12 +181,13 @@ class TabPFNFinetuner:
         freeze_mlp: bool = False,
         freeze_decoder: bool = False,
         train_only_layers: Optional[list[int]] = None,
+        max_context_size: Optional[int] = None,
         warmup_proportion: float = 0.1,
         patience: int = 8,
         device: str = "cuda",
         random_state: int = 42,
         verbose: bool = True,
-        n_estimators: int = 1,
+        n_estimators: int = 8,
         inference_precision: torch.dtype = torch.float32,
     ):
         self.epochs = epochs
@@ -174,6 +200,7 @@ class TabPFNFinetuner:
         self.freeze_mlp = freeze_mlp
         self.freeze_decoder = freeze_decoder
         self.train_only_layers = train_only_layers
+        self.max_context_size = max_context_size
         self.warmup_proportion = warmup_proportion
         self.patience = patience
         self.device = device
@@ -495,9 +522,23 @@ class TabPFNFinetuner:
         Returns (x_tensor, y_ctx_tensor, y_query_tensor, query_indices)
         where x_tensor has shape (n_ctx + n_query, 1, n_features) — the
         format expected by TabPFN's Architecture.forward().
+
+        If ``max_context_size`` is set and the dataset has more rows than
+        that, a random subset of that size is drawn first (a fresh subset
+        every epoch, via the epoch-dependent seed below) and the context/
+        query split is taken from within that subset only. This bounds the
+        size of the single forward+backward pass without ever permanently
+        dropping rows from the experiment.
         """
         rng = np.random.default_rng(self.random_state + epoch)
         n = len(X)
+
+        if self.max_context_size is not None and n > self.max_context_size:
+            sample_idx = rng.choice(n, size=self.max_context_size, replace=False)
+            X = X[sample_idx]
+            y = y[sample_idx]
+            n = self.max_context_size
+
         n_query = max(1, int(n * self.query_ratio))
 
         idx = rng.permutation(n)
@@ -563,13 +604,41 @@ class TabPFNFinetuner:
 
         Returns (val_acc, val_loss).
         Train is used as context, val as query — same setup as in _train_epoch.
+
+        If ``max_context_size`` is set, the training context is subsampled
+        (fixed seed = random_state, so every epoch's validation call uses
+        the same context subset for a fair before/after comparison) so that
+        context + validation query stays within budget. The full validation
+        set is always scored unless it alone exceeds the cap, in which case
+        a fixed random subset of it is used instead and a warning is raised.
         """
         with torch.no_grad():
-            # Use all training data as context, val as query
-            X_all = np.concatenate([X_train, X_val], axis=0)
+            X_ctx, y_ctx_enc = X_train, y_train_enc
+            X_q, y_q_enc = X_val, y_val_enc
+
+            if self.max_context_size is not None:
+                rng = np.random.default_rng(self.random_state)
+
+                if len(X_q) > self.max_context_size:
+                    warnings.warn(
+                        f"Validation set alone ({len(X_q)} rows) exceeds "
+                        f"max_context_size={self.max_context_size}; scoring "
+                        "on a fixed random subset of it instead of the full "
+                        "validation set."
+                    )
+                    sub = rng.choice(len(X_q), size=self.max_context_size, replace=False)
+                    X_q, y_q_enc = X_q[sub], y_q_enc[sub]
+
+                ctx_budget = max(0, self.max_context_size - len(X_q))
+                if len(X_ctx) > ctx_budget:
+                    sub = rng.choice(len(X_ctx), size=ctx_budget, replace=False)
+                    X_ctx, y_ctx_enc = X_ctx[sub], y_ctx_enc[sub]
+
+            # Use (possibly capped) training data as context, val as query
+            X_all = np.concatenate([X_ctx, X_q], axis=0)
             x_t = torch.tensor(X_all, dtype=torch.float32, device=self.device).unsqueeze(1)
-            y_ctx_t = torch.tensor(y_train_enc, dtype=torch.long, device=self.device).unsqueeze(1)
-            y_val_t = torch.tensor(y_val_enc, dtype=torch.long, device=self.device)
+            y_ctx_t = torch.tensor(y_ctx_enc, dtype=torch.long, device=self.device).unsqueeze(1)
+            y_val_t = torch.tensor(y_q_enc, dtype=torch.long, device=self.device)
 
             # TabPFN output already contains only test-row predictions: (n_val, 1, n_classes)
             output = model(x_t, y_ctx_t, only_return_standard_out=True)
@@ -578,7 +647,7 @@ class TabPFNFinetuner:
             val_loss = float(nn.functional.cross_entropy(logits_val, y_val_t).item())
             preds = logits_val.argmax(dim=-1).cpu().numpy()
 
-        acc = float((preds == y_val_enc).mean())
+        acc = float((preds == y_q_enc).mean())
         return acc, val_loss
 
     @classmethod
@@ -655,7 +724,17 @@ class TabPFNFinetuner:
         return instance
 
     def _build_inference_clf(self, model: nn.Module, X_train: np.ndarray, y_train: np.ndarray):
-        """Build a TabPFNClassifier that uses the fine-tuned model weights for prediction."""
+        """Build a TabPFNClassifier that uses the fine-tuned model weights for prediction.
+
+        With ``n_estimators > 1``, TabPFNClassifier.fit() populates
+        ``clf.models_`` with one entry per ensemble member -- all starting
+        from the *same* pretrained checkpoint, differing only in the data
+        permutation/config each member applies at inference time, not in
+        their weights. So every member must receive the fine-tuned weights,
+        not just the first one: loading only ``models_[0]`` would silently
+        average 1 fine-tuned member with (n_estimators - 1) un-fine-tuned
+        ones, diluting the fine-tuning effect in every reported metric.
+        """
         from tabpfn import TabPFNClassifier
 
         clf = TabPFNClassifier(
@@ -669,7 +748,9 @@ class TabPFNFinetuner:
             warnings.simplefilter("ignore")
             clf.fit(X_train, y_train)
 
-        # Replace the model weights with our fine-tuned ones
-        clf.models_[0].load_state_dict(model.state_dict())
-        clf.models_[0].eval()
+        # Replace ALL ensemble members' weights with our fine-tuned ones.
+        fine_tuned_state = model.state_dict()
+        for m in clf.models_:
+            m.load_state_dict(fine_tuned_state)
+            m.eval()
         return clf
