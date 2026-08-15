@@ -605,31 +605,39 @@ class TabPFNFinetuner:
         Returns (val_acc, val_loss).
         Train is used as context, val as query — same setup as in _train_epoch.
 
-        If ``max_context_size`` is set, the training context is subsampled
-        (fixed seed = random_state, so every epoch's validation call uses
-        the same context subset for a fair before/after comparison) so that
-        context + validation query stays within budget. The full validation
-        set is always scored unless it alone exceeds the cap, in which case
-        a fixed random subset of it is used instead and a warning is raised.
+        If ``max_context_size`` is set, context and query are capped using
+        the same split ratio as training (``query_ratio``, e.g. ~80% context
+        / ~20% query of the budget) rather than always keeping the full
+        validation set. Keeping the query 100% intact and only shrinking
+        context sounds appealing, but on datasets where the validation set
+        alone is close to or bigger than ``max_context_size`` it can shrink
+        the context all the way to zero rows -- which crashes the model
+        (there is nothing left to condition the in-context predictions on).
+        A fixed proportional split avoids that regardless of dataset size.
+        The seed is fixed (random_state, not epoch-dependent) so every
+        validation call during one run uses the same subsets.
         """
         with torch.no_grad():
             X_ctx, y_ctx_enc = X_train, y_train_enc
             X_q, y_q_enc = X_val, y_val_enc
 
-            if self.max_context_size is not None:
+            if self.max_context_size is not None and len(X_ctx) + len(X_q) > self.max_context_size:
                 rng = np.random.default_rng(self.random_state)
 
-                if len(X_q) > self.max_context_size:
+                q_budget = max(1, min(len(X_q), int(self.max_context_size * self.query_ratio)))
+                ctx_budget = max(1, min(len(X_ctx), self.max_context_size - q_budget))
+
+                if len(X_q) > q_budget:
                     warnings.warn(
-                        f"Validation set alone ({len(X_q)} rows) exceeds "
-                        f"max_context_size={self.max_context_size}; scoring "
-                        "on a fixed random subset of it instead of the full "
-                        "validation set."
+                        f"Validation set ({len(X_q)} rows) + training context "
+                        f"({len(X_ctx)} rows) exceed max_context_size="
+                        f"{self.max_context_size}; scoring on a fixed random "
+                        f"subset of {q_budget} validation rows instead of the "
+                        "full validation set."
                     )
-                    sub = rng.choice(len(X_q), size=self.max_context_size, replace=False)
+                    sub = rng.choice(len(X_q), size=q_budget, replace=False)
                     X_q, y_q_enc = X_q[sub], y_q_enc[sub]
 
-                ctx_budget = max(0, self.max_context_size - len(X_q))
                 if len(X_ctx) > ctx_budget:
                     sub = rng.choice(len(X_ctx), size=ctx_budget, replace=False)
                     X_ctx, y_ctx_enc = X_ctx[sub], y_ctx_enc[sub]
