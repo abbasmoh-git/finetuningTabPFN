@@ -6,12 +6,14 @@ Prints one row per dataset/method with mean test metrics across folds/repeats.
 
 Usage (from repo root):
     python read_results.py
+    python read_results.py results_before_fix/finetuning_experiments   # read a backup instead
 """
 
 import pickle
+import sys
 from pathlib import Path
 
-results_root = Path("results/finetuning_experiments")
+results_root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("results/finetuning_experiments")
 
 header = (
     f"{'dataset':<35} {'experiment':<22} {'method':<15} "
