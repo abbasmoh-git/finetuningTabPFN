@@ -213,6 +213,54 @@ def main():
         lines.append(row)
     lines.append("")
 
+    # --- Table 5.6: Common-subset comparison (fair, same datasets for all) ---
+    # Only datasets present in the baseline AND every fine-tuning variant --
+    # the strictest possible comparison, so no strategy is compared on an
+    # easier or harder subset of datasets than any other.
+    common_all = set(baseline)
+    for e in variant_experiments:
+        common_all &= set(runs[e])
+    common_all = sorted(common_all)
+
+    lines.append(
+        "## Table 5.6 -- Common-Subset Comparison "
+        f"(only datasets present in baseline + all {len(variant_experiments)} strategies, "
+        f"n={len(common_all)})\n"
+    )
+    if len(common_all) < 5:
+        lines.append(
+            "*(Too few common datasets to report -- fewer than 5 datasets have "
+            "results for every strategy simultaneously.)*\n"
+        )
+    else:
+        lines.append("| Strategy | Mean Δ Accuracy | Mean Δ Bal. Acc. | Mean Δ ROC-AUC | Mean Δ Log Loss |")
+        lines.append("|---|---|---|---|---|")
+        common_summaries: dict = {}
+        for e in variant_experiments:
+            common_summaries[e] = {}
+            row = f"| {display_name(e)} "
+            for key, label, higher_is_better in METRICS:
+                deltas = {
+                    name: all_deltas[e][key][name]
+                    for name in common_all
+                    if name in all_deltas[e][key]
+                }
+                s = summarize(deltas)
+                common_summaries[e][key] = s
+                row += f"| {fmt(s['mean'], 5)} "
+            row += "|"
+            lines.append(row)
+        lines.append("")
+
+        lines.append("| Strategy | Wins | Ties | Losses | (Accuracy, on common subset) |")
+        lines.append("|---|---|---|---|---|")
+        for e in variant_experiments:
+            s = common_summaries[e]["acc"]
+            lines.append(f"| {display_name(e)} | {s['wins']} | {s['ties']} | {s['losses']} | n={s['n']} |")
+        lines.append("")
+
+        lines.append(f"Datasets included in the common subset: {', '.join(common_all)}\n")
+
     tables_path = output_dir / "tables.md"
     tables_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"Tables written to: {tables_path}")
