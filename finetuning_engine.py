@@ -9,38 +9,61 @@ Core idea (same as TabICL):
   3. Compute CrossEntropyLoss on query predictions.
   4. Backpropagate and update only the unfrozen parameters.
 
-TabPFN model structure (analogous to TabICL):
-  TabICL                TabPFN
-  --------------------  ----------------------------
-  col_embedder       →  attn_between_features (per layer)
-  row_interactor     →  attn_between_items    (per layer)
-  icl_predictor      →  decoder head
+TabPFN v3 model structure -- VERIFIED 2026-08-16 by directly introspecting
+the installed model on the cluster (model.named_children() /
+model.named_modules()), because an earlier version of this docstring
+described the older PriorLabs base/v2.6 architecture and turned out to be
+WRONG for the actually-installed TabPFN v3 package. Real structure:
+
+  model.icl_blocks               : nn.ModuleList of 24 ICLTransformerBlock
+                                    (the real transformer stack, ~51.4M of
+                                    the model's params -- NOT
+                                    "transformer_encoder.layers", which
+                                    does not exist on this model)
+    icl_blocks[i].icl_attention     : the attention mechanism. There is only
+                                       ONE attention type per block in this
+                                       version -- no separate feature-attention
+                                       vs. row/item-attention split.
+    icl_blocks[i].mlp               : the block's feed-forward MLP
+  model.many_class_decoder       : output decoder head
+  model.x_embed, col_y_encoder, feature_distribution_embedder,
+  column_aggregator, icl_y_encoder, output_norm
+                                  : auxiliary input-embedding / output
+                                    components -- not "attention" or "mlp"
 
 Freezing flags:
-  freeze_feature_attn : freeze all attn_between_features sub-modules
-  freeze_row_attn     : freeze all attn_between_items sub-modules
-  freeze_mlp          : freeze all MLP (feed-forward) sub-modules
-  freeze_decoder      : freeze the output decoder head
-  train_only_layers   : if set, only these transformer_encoder layer indices
-                        remain trainable (everything else -- other layers and
-                        the decoder -- is frozen), regardless of the flags
-                        above. Use this for layer-wise fine-tuning experiments
-                        (e.g. train_only_layers=[5] to test layer 5 alone).
+  freeze_feature_attn, freeze_row_attn : synonyms (either one freezes all
+                        icl_attention sub-modules across every block --
+                        kept as two separate flags only for config
+                        backward-compatibility, since there is no real
+                        feature/row split in this architecture).
+  freeze_mlp          : freeze all icl_blocks[i].mlp sub-modules
+  freeze_decoder      : freeze many_class_decoder
+  train_only_layers   : if set, only these icl_blocks[i] indices (0-23)
+                        remain trainable -- everything else (other blocks,
+                        the decoder, the auxiliary modules) is frozen,
+                        regardless of the flags above. Use this for
+                        layer-wise fine-tuning experiments.
 
-Verified against the actual TabPFN architecture (PriorLabs/TabPFN,
-architectures/base/layer.py + transformer.py):
-  PerFeatureEncoderLayer submodules -> self.self_attn_between_features,
-                                        self.self_attn_between_items,
-                                        self.mlp (and self.second_mlp)
-  PerFeatureTransformer             -> self.transformer_encoder.layers[i]
-                                        (nn.ModuleList of PerFeatureEncoderLayer)
-                                        self.decoder_dict (output head)
-So substring matching on "feature" / "item" / "mlp" / "decoder" in
-named_modules() reliably hits the right sub-modules. Note: this was verified
-against the TabPFN v2.6 / base architecture; if the cluster's `tabpfn` package
-resolves TabPFNv3 to a different architecture module, re-check by running
-`for n, _ in model.named_modules(): print(n)` once before trusting the freeze
-counts blindly.
+Whenever a *selective* run is requested (freeze_mlp or attention-freezing
+set, i.e. not full fine-tuning), the auxiliary embedding/aggregation
+modules listed above are frozen too -- otherwise e.g. "MLP-only" would
+silently leave the attention mechanism (26M+ params) trainable, defeating
+the point of the experiment.
+
+Known history: earlier versions of this file matched sub-modules by
+substring ("feature" / "item" / "row" / "mlp" / "decoder" in the module
+name), based on the older base/v2.6 architecture. On the installed v3
+model this happened to accidentally work for "attention-only" (mlp/decoder
+substrings still matched correctly) but was a real, silent bug for
+"MLP-only" (the "feature"/"item"/"row" substrings never matched anything
+in icl_attention, so attention was never frozen -- MLP-only trained almost
+the whole model) and for layer-wise fine-tuning (the "layers." substring
+only matched feature_distribution_embedder.layers.{0,1,2}, a small 3-layer
+preprocessing module with 869K params, never the real 24-block, 51M-param
+icl_blocks stack). This was found and fixed on 2026-08-16 by introspecting
+the real model structure instead of assuming the old architecture. Any
+run performed before this fix used the incorrect matching.
 
 Usage
 -----
@@ -61,6 +84,7 @@ y_proba = finetuner.predict_proba(X_test)
 from __future__ import annotations
 
 import copy
+import re
 import time
 import warnings
 from pathlib import Path
@@ -411,25 +435,40 @@ class TabPFNFinetuner:
         model = clf.models_[0]
         return model, clf
 
+    # Regexes matching the VERIFIED TabPFN v3 architecture (see module
+    # docstring for how/when this was checked against the real model).
+    _ATTN_RE = re.compile(r"^icl_blocks\.\d+\.icl_attention(\.|$)")
+    _MLP_RE = re.compile(r"^icl_blocks\.\d+\.mlp(\.|$)")
+    _BLOCK_RE = re.compile(r"^icl_blocks\.(\d+)(\.|$)")
+    _DECODER_RE = re.compile(r"^many_class_decoder(\.|$)")
+    _AUX_PREFIXES = (
+        "x_embed", "col_y_encoder", "feature_distribution_embedder",
+        "column_aggregator", "icl_y_encoder", "output_norm",
+    )
+
+    def _is_aux(self, name: str) -> bool:
+        return any(name == p or name.startswith(p + ".") for p in self._AUX_PREFIXES)
+
     def _apply_freezing(self, model: nn.Module) -> None:
         """Zero requires_grad on frozen sub-modules.
 
-        Component names in TabPFN (analogous to TabICL), verified against the
-        actual PriorLabs/TabPFN source (architectures/base/layer.py):
-          - feature attention : sub-modules whose name contains 'feature'
-            (matches self.self_attn_between_features)
-          - row/item attention : sub-modules whose name contains 'item' or 'row'
-            (matches self.self_attn_between_items)
-          - MLP                : sub-modules whose name contains 'mlp'
-            (matches self.mlp and self.second_mlp)
-          - decoder head       : sub-modules whose name contains 'decoder'
-            (matches self.decoder_dict)
+        Targets the VERIFIED TabPFN v3 structure (see module docstring):
+          - attention : icl_blocks[i].icl_attention (both freeze_feature_attn
+            and freeze_row_attn are treated as the same thing -- there is no
+            real feature/row attention split in this architecture, the two
+            flags exist only for config backward-compatibility)
+          - MLP       : icl_blocks[i].mlp
+          - decoder   : many_class_decoder
 
-        If `train_only_layers` is set, it takes precedence: every parameter is
-        frozen except those belonging to transformer_encoder.layers[i] for i
-        in train_only_layers. This implements layer-wise fine-tuning (testing
-        which single encoder layer, or subset of layers, matters most) and
-        ignores the freeze_* flags above for the frozen/trainable decision.
+        Whenever this is a *selective* run (freeze_mlp or attention-freezing
+        requested), the auxiliary embedding/aggregation modules (x_embed,
+        col_y_encoder, feature_distribution_embedder, column_aggregator,
+        icl_y_encoder, output_norm) are frozen too, so e.g. "MLP-only" really
+        only leaves the MLP trainable rather than also leaving these small
+        side components trainable by omission.
+
+        If `train_only_layers` is set, it takes precedence and delegates to
+        `_apply_layerwise_freezing` instead.
 
         Call this AFTER moving the model to device but BEFORE creating the
         optimizer, so the optimizer only sees trainable parameters.
@@ -438,14 +477,18 @@ class TabPFNFinetuner:
             self._apply_layerwise_freezing(model, self.train_only_layers)
             return
 
+        freeze_attention = self.freeze_feature_attn or self.freeze_row_attn
+        is_selective_run = freeze_attention or self.freeze_mlp
+
         frozen_count = 0
         for name, module in model.named_modules():
-            name_lower = name.lower()
+            if not name:
+                continue
             should_freeze = (
-                (self.freeze_feature_attn and "feature" in name_lower)
-                or (self.freeze_row_attn and ("item" in name_lower or "row" in name_lower))
-                or (self.freeze_mlp and "mlp" in name_lower)
-                or (self.freeze_decoder and "decoder" in name_lower)
+                (freeze_attention and self._ATTN_RE.match(name))
+                or (self.freeze_mlp and self._MLP_RE.match(name))
+                or (self.freeze_decoder and self._DECODER_RE.match(name))
+                or (is_selective_run and self._is_aux(name))
             )
             if should_freeze:
                 for p in module.parameters():
@@ -455,29 +498,29 @@ class TabPFNFinetuner:
         if self.verbose:
             if frozen_count > 0:
                 print(f"  [finetune] frozen {frozen_count} sub-module(s)")
-            elif self.freeze_feature_attn or self.freeze_row_attn or self.freeze_mlp or self.freeze_decoder:
+            elif freeze_attention or self.freeze_mlp or self.freeze_decoder:
                 # A freeze flag was requested but nothing matched -- almost
                 # certainly a naming mismatch with the installed TabPFN
                 # version, not "nothing to freeze". Fail loud instead of
                 # silently running full fine-tuning under a selective label.
                 warnings.warn(
                     "A freeze_* flag was set but no sub-module name matched "
-                    "('feature' / 'item' / 'row' / 'mlp' / 'decoder'). This "
-                    "run is NOT selectively fine-tuning anything -- check "
-                    "`for n, _ in model.named_modules(): print(n)` against "
-                    "the installed tabpfn version."
+                    "the verified icl_blocks/icl_attention/mlp/many_class_decoder "
+                    "patterns. This run is NOT selectively fine-tuning anything "
+                    "-- check `for n, _ in model.named_modules(): print(n)` "
+                    "against the installed tabpfn version."
                 )
 
     def _apply_layerwise_freezing(self, model: nn.Module, train_only_layers: list) -> None:
-        """Freeze everything except the given transformer encoder layer indices.
+        """Freeze everything except the given icl_blocks[i] transformer block(s).
 
-        Matches module names of the form 'transformer_encoder.layers.<i>' (the
-        PerFeatureEncoderLayer instances inside the encoder's nn.ModuleList)
-        and keeps only the requested indices trainable. All other parameters,
-        including the decoder head and any other layers, are frozen.
+        Matches module names of the form 'icl_blocks.<i>' (there are 24 such
+        blocks, verified against the installed model -- see module
+        docstring) and keeps only the requested indices trainable. All other
+        parameters -- other blocks, the decoder, and the auxiliary
+        embedding/aggregation modules -- are frozen, so the experiment
+        isolates exactly the chosen transformer block(s).
         """
-        import re
-
         target_indices = {int(i) for i in train_only_layers}
         matched_indices = set()
 
@@ -485,30 +528,26 @@ class TabPFNFinetuner:
         for p in model.parameters():
             p.requires_grad = False
 
-        # Then, re-enable gradients only for the requested layer indices.
+        # Then, re-enable gradients only for the requested block indices.
         for name, module in model.named_modules():
-            m = re.search(r"(?:^|\.)layers\.(\d+)(?:\.|$)", name)
+            m = self._BLOCK_RE.match(name)
             if m and int(m.group(1)) in target_indices:
-                # Only unfreeze at the PerFeatureEncoderLayer level itself
-                # (name ends exactly at the index), not sub-matches, to avoid
-                # redundant work -- but unfreezing repeatedly is harmless, so
-                # this is a minor efficiency choice, not a correctness one.
                 for p in module.parameters():
                     p.requires_grad = True
                 matched_indices.add(int(m.group(1)))
 
         if self.verbose:
             print(
-                f"  [finetune] layer-wise: training only layer(s) "
-                f"{sorted(matched_indices)} (requested: {sorted(target_indices)})"
+                f"  [finetune] layer-wise: training only icl_blocks[{sorted(matched_indices)}] "
+                f"(requested: {sorted(target_indices)})"
             )
         missing = target_indices - matched_indices
         if missing:
             warnings.warn(
                 f"train_only_layers requested indices {sorted(missing)} but no "
-                "matching 'transformer_encoder.layers.<i>' sub-module was "
-                "found for them -- check the layer count of the installed "
-                "TabPFN model (e.g. `len(model.transformer_encoder.layers)`)."
+                "matching 'icl_blocks.<i>' sub-module was found for them -- "
+                "check the block count of the installed TabPFN model "
+                "(e.g. `len(model.icl_blocks)`, currently verified as 24)."
             )
 
     def _make_meta_batch(
