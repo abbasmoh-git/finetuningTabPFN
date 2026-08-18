@@ -277,9 +277,11 @@ def main():
         ax.set_ylabel(f"{label} difference vs baseline")
     plt.tight_layout()
     plot1_path = output_dir / "deltas_boxplot.png"
+    plot1_pdf_path = output_dir / "deltas_boxplot.pdf"
     plt.savefig(plot1_path, dpi=150, bbox_inches="tight")
+    plt.savefig(plot1_pdf_path, bbox_inches="tight")
     plt.close()
-    print(f"Boxplot saved to: {plot1_path}")
+    print(f"Boxplot saved to: {plot1_path} and {plot1_pdf_path}")
 
     # --- Plot 2: Stacked bar chart of wins/ties/losses (accuracy) ---
     fig, ax = plt.subplots(figsize=(8, 5))
@@ -298,12 +300,14 @@ def main():
     ax.legend()
     plt.tight_layout()
     plot2_path = output_dir / "wins_ties_losses.png"
+    plot2_pdf_path = output_dir / "wins_ties_losses.pdf"
     plt.savefig(plot2_path, dpi=150, bbox_inches="tight")
+    plt.savefig(plot2_pdf_path, bbox_inches="tight")
     plt.close()
-    print(f"Bar chart saved to: {plot2_path}")
+    print(f"Bar chart saved to: {plot2_path} and {plot2_pdf_path}")
 
     print("\nDone. Copy results/thesis_report/tables.md into your thesis, "
-          "and insert the two PNGs as figures.")
+          "and insert the two figures (PNG or PDF, both are generated).")
 
 
 if __name__ == "__main__":
