@@ -10,15 +10,13 @@ config_base["validation_seed"] = 42
 config_base["finetuning_method"] = "own_finetuning"
 
 # --- Selective fine-tuning: LAYER-WISE ---
-# Only the transformer encoder layer indices listed in "train_only_layers"
-# stay trainable; every other layer and the decoder are frozen. This example
-# trains only layer 0 -- copy this file per layer index (or write a small
-# loop over --config) to sweep across all layers.
-#
-# Before running a full sweep, check how many layers the installed TabPFN
-# model actually has, e.g.:
-#   len(finetuner._model.transformer_encoder.layers)
-# so you don't request an out-of-range index.
+# Only the icl_blocks[i] transformer block indices listed in
+# "train_only_layers" stay trainable; every other block, the decoder, and
+# the auxiliary embedding modules are frozen. This trains only block 0.
+# See config_layerwise_layer6.py / _layer11 / _layer17 / _layer23 for the
+# other tested blocks (verified 2026-08-16: model.icl_blocks has 24 blocks,
+# indices 0-23 -- check `len(model.icl_blocks)` again if the tabpfn
+# package version changes).
 config_base["finetuning_hyperparams"] = {
     "learning_rate": 1e-5,
     "num_epochs": 200,
