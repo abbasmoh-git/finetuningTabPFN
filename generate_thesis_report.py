@@ -261,6 +261,32 @@ def main():
 
         lines.append(f"Datasets included in the common subset: {', '.join(common_all)}\n")
 
+    # --- Table 5.3: Layer-wise fine-tuning -- Mean Delta per layer ---
+    # Identifies every "layerwise_layer<N>" experiment and sorts by the
+    # numeric layer index (NOT alphabetically -- "layer11" < "layer6"
+    # alphabetically, which would be a wrong, confusing order in a table
+    # meant to show a trend across network depth).
+    layer_re = re.compile(r"layerwise_layer(\d+)$")
+    layer_experiments = []
+    for e in variant_experiments:
+        m = layer_re.match(e)
+        if m:
+            layer_experiments.append((int(m.group(1)), e))
+    layer_experiments.sort(key=lambda t: t[0])
+
+    if layer_experiments:
+        lines.append("## Table 5.3 -- Layer-wise Fine-Tuning: Mean Δ per Layer\n")
+        lines.append("| Layer | Datasets | Mean Δ Accuracy | Mean Δ Bal. Acc. | Mean Δ ROC-AUC | Mean Δ Log Loss |")
+        lines.append("|---|---|---|---|---|---|")
+        for layer_idx, e in layer_experiments:
+            n = all_summaries[e]["acc"]["n"]
+            row = f"| {layer_idx} | {n} "
+            for key, _, _ in METRICS:
+                row += f"| {fmt(all_summaries[e][key]['mean'], 5)} "
+            row += "|"
+            lines.append(row)
+        lines.append("")
+
     tables_path = output_dir / "tables.md"
     tables_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"Tables written to: {tables_path}")
@@ -310,8 +336,39 @@ def main():
     plt.close()
     print(f"Bar chart saved to: {plot2_path}, {plot2_pdf_path} and {plot2_svg_path}")
 
+    # --- Plot 3 (Figure 5.3): Boxplots of per-dataset deltas across LAYERS ---
+    # Answers a different question than Plot 1: not "which strategy is
+    # best" but "does the effect change across network depth". X-axis is
+    # the layer index in numeric order (not alphabetical), one panel per
+    # metric, same visual style as Plot 1 for consistency. Only individual
+    # per-dataset boxplots are shown (no connecting line between layers) so
+    # the figure does not imply anything about untested layers in between.
+    if layer_experiments:
+        fig, axes = plt.subplots(1, 4, figsize=(22, 5))
+        layer_labels = [str(layer_idx) for layer_idx, _ in layer_experiments]
+        for ax, (key, label, _) in zip(axes, METRICS):
+            data = [
+                list(all_deltas[e][key].values()) or [0.0]
+                for _, e in layer_experiments
+            ]
+            ax.boxplot(data)
+            ax.set_xticklabels(layer_labels)
+            ax.axhline(0, color="red", linestyle="--", linewidth=1)
+            ax.set_title(label)
+            ax.set_xlabel("Transformer block (icl_blocks index)")
+            ax.set_ylabel(f"{label} difference vs baseline")
+        plt.tight_layout()
+        plot3_path = output_dir / "layerwise_boxplot.png"
+        plot3_pdf_path = output_dir / "layerwise_boxplot.pdf"
+        plot3_svg_path = output_dir / "layerwise_boxplot.svg"
+        plt.savefig(plot3_path, dpi=150, bbox_inches="tight")
+        plt.savefig(plot3_pdf_path, bbox_inches="tight")
+        plt.savefig(plot3_svg_path, bbox_inches="tight")
+        plt.close()
+        print(f"Layer-wise boxplot saved to: {plot3_path}, {plot3_pdf_path} and {plot3_svg_path}")
+
     print("\nDone. Copy results/thesis_report/tables.md into your thesis, "
-          "and insert the two figures (PNG, PDF, or SVG -- SVG usually embeds "
+          "and insert the figures (PNG, PDF, or SVG -- SVG usually embeds "
           "most cleanly as a real vector image in Word).")
 
 
