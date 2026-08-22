@@ -36,6 +36,7 @@ import matplotlib
 matplotlib.use("Agg")  # no display available on cluster/login node
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy import stats
 
 results_root = Path("results/finetuning_experiments")
 output_dir = Path("results/thesis_report")
@@ -45,11 +46,20 @@ TIE_THRESHOLD = 0.005  # |delta| below this counts as a tie, not a win/loss
 BASELINE_METHOD = "no_finetuning"
 
 # (internal key, display label, higher_is_better)
+#
+# Log Loss is reported as NEGATIVE log loss (-log_loss) so that, like the
+# other three metrics, "higher is better". This gives every metric in this
+# file a single, uniform delta convention:
+#     delta = fine_tuned - baseline   (positive delta = fine-tuning helped)
+# with no per-metric sign flipping anywhere downstream (deltas, wins/ties/
+# losses, CIs, plots). Numerically this is equivalent to the old
+# "baseline_logloss - variant_logloss" delta -- only the sign convention
+# and the label changed, not the underlying values.
 METRICS = [
     ("acc", "Accuracy", True),
     ("bal_acc", "Balanced Accuracy", True),
     ("roc_auc", "ROC-AUC", True),
-    ("logloss", "Log Loss", False),
+    ("neg_logloss", "Negative Log Loss", True),
 ]
 
 
@@ -81,7 +91,9 @@ def load_all_runs():
                 "acc": summary["accuracy"]["mean"],
                 "bal_acc": summary["balanced_accuracy"]["mean"],
                 "roc_auc": summary["roc_auc"]["mean"],
-                "logloss": summary["logloss"]["mean"],
+                # Stored as NEGATIVE log loss so higher = better, matching
+                # every other metric (see METRICS comment above).
+                "neg_logloss": -summary["logloss"]["mean"],
             }
     return runs, configs
 
@@ -141,6 +153,33 @@ def fmt(x, digits=4) -> str:
     return str(x)
 
 
+def confidence_interval_95(deltas: dict):
+    """Two-sided 95% CI (t-distribution, df=n-1) over dataset-level deltas.
+
+    Computed directly from the same per-dataset delta values used for the
+    mean/median/boxplots -- NOT averaged from per-fold CIs. Returns
+    (mean, lo, hi); (mean, nan, nan) if fewer than 2 datasets are available.
+    """
+    values = list(deltas.values())
+    n = len(values)
+    mean = float(np.mean(values)) if values else float("nan")
+    if n < 2:
+        return mean, float("nan"), float("nan")
+    sem = np.std(values, ddof=1) / np.sqrt(n)
+    if sem == 0:
+        return mean, mean, mean
+    t_crit = stats.t.ppf(0.975, df=n - 1)
+    return mean, mean - t_crit * sem, mean + t_crit * sem
+
+
+def fmt_mean_ci(deltas: dict, digits=5) -> str:
+    """Compact 'Mean Δ [95% CI]' string, e.g. '0.00123 [-0.00050, 0.00296]'."""
+    mean, lo, hi = confidence_interval_95(deltas)
+    if np.isnan(lo):
+        return f"{mean:.{digits}f} [n/a]"
+    return f"{mean:.{digits}f} [{lo:.{digits}f}, {hi:.{digits}f}]"
+
+
 def main():
     runs, configs = load_all_runs()
     baseline_experiment = find_baseline_experiment(runs)
@@ -188,22 +227,31 @@ def main():
             )
         lines.append(f"\n(compared on {len(common)} datasets present in both baseline and this run)\n")
 
-    # --- Table 5.5: Overall comparison (mean deltas) ---
-    lines.append("## Table 5.5 -- Overall Comparison of Fine-Tuning Strategies (mean)\n")
-    lines.append("| Strategy | Datasets | Mean Δ Accuracy | Mean Δ Bal. Acc. | Mean Δ ROC-AUC | Mean Δ Log Loss |")
+    # --- Table 5.5: Overall comparison (mean deltas + 95% CI) ---
+    lines.append("## Table 5.5 -- Overall Comparison of Fine-Tuning Strategies (mean Δ [95% CI])\n")
+    lines.append(
+        "| Strategy | Datasets | Mean Δ Accuracy [95% CI] | Mean Δ Bal. Acc. [95% CI] | "
+        "Mean Δ ROC-AUC [95% CI] | Mean Δ Negative Log Loss [95% CI] |"
+    )
     lines.append("|---|---|---|---|---|---|")
     for e in variant_experiments:
         n = all_summaries[e]["acc"]["n"]
         row = f"| {display_name(e)} | {n} "
         for key, _, _ in METRICS:
-            row += f"| {fmt(all_summaries[e][key]['mean'], 5)} "
+            row += f"| {fmt_mean_ci(all_deltas[e][key])} "
         row += "|"
         lines.append(row)
-    lines.append("")
+    lines.append(
+        "\n*95% CI: two-sided t-distribution (df = n_datasets - 1), computed directly "
+        "over the dataset-level deltas shown above -- not averaged from per-fold CIs.*\n"
+    )
 
     # --- Table 5.5b: median deltas ---
     lines.append("## Table 5.5b -- Overall Comparison of Fine-Tuning Strategies (median)\n")
-    lines.append("| Strategy | Median Δ Accuracy | Median Δ Bal. Acc. | Median Δ ROC-AUC | Median Δ Log Loss |")
+    lines.append(
+        "| Strategy | Median Δ Accuracy | Median Δ Bal. Acc. | Median Δ ROC-AUC | "
+        "Median Δ Negative Log Loss |"
+    )
     lines.append("|---|---|---|---|---|")
     for e in variant_experiments:
         row = f"| {display_name(e)} "
@@ -233,11 +281,16 @@ def main():
             "results for every strategy simultaneously.)*\n"
         )
     else:
-        lines.append("| Strategy | Mean Δ Accuracy | Mean Δ Bal. Acc. | Mean Δ ROC-AUC | Mean Δ Log Loss |")
+        lines.append(
+            "| Strategy | Mean Δ Accuracy [95% CI] | Mean Δ Bal. Acc. [95% CI] | "
+            "Mean Δ ROC-AUC [95% CI] | Mean Δ Negative Log Loss [95% CI] |"
+        )
         lines.append("|---|---|---|---|---|")
         common_summaries: dict = {}
+        common_deltas_subset: dict = {}
         for e in variant_experiments:
             common_summaries[e] = {}
+            common_deltas_subset[e] = {}
             row = f"| {display_name(e)} "
             for key, label, higher_is_better in METRICS:
                 deltas = {
@@ -247,10 +300,14 @@ def main():
                 }
                 s = summarize(deltas)
                 common_summaries[e][key] = s
-                row += f"| {fmt(s['mean'], 5)} "
+                common_deltas_subset[e][key] = deltas
+                row += f"| {fmt_mean_ci(deltas)} "
             row += "|"
             lines.append(row)
-        lines.append("")
+        lines.append(
+            "\n*95% CI: two-sided t-distribution (df = n_datasets - 1) over the "
+            "common-subset dataset-level deltas.*\n"
+        )
 
         lines.append("| Strategy | Wins | Ties | Losses | (Accuracy, on common subset) |")
         lines.append("|---|---|---|---|---|")
@@ -275,26 +332,34 @@ def main():
     layer_experiments.sort(key=lambda t: t[0])
 
     if layer_experiments:
-        lines.append("## Table 5.3 -- Layer-wise Fine-Tuning: Mean Δ per Layer\n")
-        lines.append("| Layer | Datasets | Mean Δ Accuracy | Mean Δ Bal. Acc. | Mean Δ ROC-AUC | Mean Δ Log Loss |")
+        lines.append("## Table 5.3 -- Layer-wise Fine-Tuning: Mean Δ per Layer [95% CI]\n")
+        lines.append(
+            "| Layer | Datasets | Mean Δ Accuracy [95% CI] | Mean Δ Bal. Acc. [95% CI] | "
+            "Mean Δ ROC-AUC [95% CI] | Mean Δ Negative Log Loss [95% CI] |"
+        )
         lines.append("|---|---|---|---|---|---|")
         for layer_idx, e in layer_experiments:
             n = all_summaries[e]["acc"]["n"]
             row = f"| {layer_idx} | {n} "
             for key, _, _ in METRICS:
-                row += f"| {fmt(all_summaries[e][key]['mean'], 5)} "
+                row += f"| {fmt_mean_ci(all_deltas[e][key])} "
             row += "|"
             lines.append(row)
-        lines.append("")
+        lines.append(
+            "\n*95% CI: two-sided t-distribution (df = n_datasets - 1) over the "
+            "dataset-level deltas for that layer.*\n"
+        )
 
     tables_path = output_dir / "tables.md"
     tables_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"Tables written to: {tables_path}")
 
-    # --- Plot 1: Boxplots of per-dataset deltas, one panel per metric ---
-    fig, axes = plt.subplots(1, 4, figsize=(22, 5))
+    # --- Plot 1 (Figure 5.1): Boxplots of per-dataset deltas, one panel per metric ---
+    # 2x2 grid: Accuracy / Balanced Accuracy / ROC-AUC / Negative Log Loss.
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    axes_flat = axes.flatten()
     labels = [display_name(e) for e in variant_experiments]
-    for ax, (key, label, _) in zip(axes, METRICS):
+    for ax, (key, label, _) in zip(axes_flat, METRICS):
         data = [list(all_deltas[e][key].values()) or [0.0] for e in variant_experiments]
         ax.boxplot(data)
         ax.set_xticklabels(labels, rotation=40, ha="right")
@@ -344,9 +409,11 @@ def main():
     # per-dataset boxplots are shown (no connecting line between layers) so
     # the figure does not imply anything about untested layers in between.
     if layer_experiments:
-        fig, axes = plt.subplots(1, 4, figsize=(22, 5))
+        # 2x2 grid, same layout as Figure 5.1, for visual consistency.
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        axes_flat = axes.flatten()
         layer_labels = [str(layer_idx) for layer_idx, _ in layer_experiments]
-        for ax, (key, label, _) in zip(axes, METRICS):
+        for ax, (key, label, _) in zip(axes_flat, METRICS):
             data = [
                 list(all_deltas[e][key].values()) or [0.0]
                 for _, e in layer_experiments
