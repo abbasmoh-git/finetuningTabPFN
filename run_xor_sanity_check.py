@@ -88,7 +88,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- TabArena-consistent hyperparameters (see module docstring for the
 #     learning_rate discrepancy vs. Amir's own notebook demo) ---
-XOR_LEARNING_RATE = 1e-5
+XOR_LEARNING_RATE = 1e-4
 XOR_NUM_EPOCHS = 200
 XOR_WEIGHT_DECAY = 0.01
 XOR_MAX_CONTEXT_SIZE = 3000  # never actually triggered -- XOR datasets are far below this
