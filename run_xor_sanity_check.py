@@ -25,29 +25,28 @@ the `merge-amir` branch), per explicit instruction to reuse his exact
 formulation rather than inventing a different XOR/checkerboard definition.
 Do not modify this function without first checking that notebook.
 
-Fine-tuning hyperparameters -- LEARNING RATE DISCREPANCY, FLAGGED
---------------------------------------------------------------------
-This script uses the TabPFNFinetuner engine (finetuning_engine.py) with, by
-default, TabArena-consistent hyperparameters: learning_rate=1e-5,
+Fine-tuning hyperparameters -- LEARNING RATE, DELIBERATELY DIFFERENT FROM TABARENA
+------------------------------------------------------------------------------------
+This script uses the TabPFNFinetuner engine (finetuning_engine.py) with
 num_epochs=200, weight_decay=0.01, max_context_size=3000, n_estimators=8 --
-i.e. exactly config_own_finetuning.py / config_attention_only_finetuning.py
+i.e. otherwise exactly config_own_finetuning.py / config_attention_only_finetuning.py
 / config_mlp_only_finetuning.py / config_layerwise_finetuning.py, just
 pointed at XOR data instead of an OpenML task.
 
-FLAGGED DISCREPANCY (reported here rather than silently resolved, as
-instructed): Amir's own notebook demo used learning_rate=1e-4 (not 1e-5),
-plus query_ratio=0.3, epochs=50, patience=20, grad_clip=1.0,
-warmup_proportion=0.1. TabPFNFinetuner as it exists today does not
-implement query_ratio / patience / grad_clip / warmup_proportion at all (it
-uses max_context_size's proportional split for validation instead, and has
-no early stopping or gradient clipping) -- so an exact reproduction of
-Amir's notebook settings is not possible without changing the engine
-itself. Given the instruction to keep "the same fine-tuning engine and main
-hyperparameters as the TabArena experiments, including learning rate
-1e-5", this script defaults to 1e-5. Set XOR_LEARNING_RATE below to 1e-4
-and rerun (writes into the same output directory, overwriting only XOR
-results) if a comparison against Amir's exact notebook learning rate is
-wanted instead -- flagging this choice rather than picking silently.
+LEARNING RATE: XOR_LEARNING_RATE = 1e-4, matching Amir's own notebook demo
+(decision_boundary_xor_tabpfn_v3.ipynb), NOT the 1e-5 used in the main
+TabArena experiments. This was flagged as a discrepancy before running (the
+original instruction was to keep "the same main hyperparameters as the
+TabArena experiments, including learning rate 1e-5, unless Amir's notebook
+explicitly requires a different setting") and deliberately resolved in favour
+of 1e-4, on the reasoning that this script's purpose is to reproduce Amir's
+XOR sanity check specifically, not another TabArena-style run -- so matching
+his reference setting takes priority here. Amir's notebook also used
+query_ratio=0.3, epochs=50, patience=20, grad_clip=1.0, warmup_proportion=0.1,
+none of which TabPFNFinetuner implements (it uses max_context_size's
+proportional split for validation instead, and has no early stopping or
+gradient clipping) -- so this is not a byte-for-byte reproduction of his
+notebook, only a same-engine, same-learning-rate approximation of it.
 
 Guarantee: existing TabArena results untouched
 ------------------------------------------------
@@ -262,9 +261,10 @@ def summarize_and_save(all_results: dict):
     lines = []
     lines.append("# XOR Sanity Check -- Baseline vs. Fine-Tuning\n")
     lines.append(
-        f"Learning rate used: {XOR_LEARNING_RATE} (TabArena-consistent; Amir's notebook "
-        "demo used 1e-4 -- see module docstring in run_xor_sanity_check.py for the "
-        "flagged discrepancy and how to rerun with 1e-4 instead).\n"
+        f"Learning rate used: {XOR_LEARNING_RATE} (1e-4), following the XOR configuration "
+        "used in Amir's reference notebook (decision_boundary_xor_tabpfn_v3.ipynb). "
+        "The main TabArena experiments used 1e-5 -- see module docstring in "
+        "run_xor_sanity_check.py for the full discussion of this deliberate difference.\n"
     )
     lines.append(
         "| Dataset | Strategy | Accuracy | Bal. Accuracy | ROC-AUC | Neg. Log Loss | "
