@@ -190,6 +190,20 @@ def main():
         if e != baseline_experiment and len(runs[e]) >= 5  # skip stray/old folders
     ]
 
+    # "Main" comparison set = the 4 core strategies (Full / Attention-only /
+    # MLP-only / Layer-wise at layer 0). This is what the original thesis
+    # structure compares head-to-head: the per-variant "vs Baseline" tables,
+    # Table 5.5/5.5b/5.6, deltas_boxplot, and wins_ties_losses. The layer
+    # depth sweep (layers 6/11/17/23, plus layer 0 again as one of the 5
+    # sweep points) is a separate analysis and appears ONLY in Table 5.3 and
+    # layerwise_boxplot -- never mixed into the main comparison.
+    _extra_layer_re = re.compile(r"layerwise_layer(\d+)$")
+    def _is_extra_layer_sweep_point(e: str) -> bool:
+        m = _extra_layer_re.match(e)
+        return m is not None and m.group(1) != "0"
+
+    main_variants = [e for e in variant_experiments if not _is_extra_layer_sweep_point(e)]
+
     lines = []
 
     # --- Table 5.1: Experimental coverage ---
@@ -202,23 +216,30 @@ def main():
         lines.append(f"| {display_name(e)} | TabPFN v3 | {len(runs[e])} | {lr} |")
     lines.append("")
 
-    # --- Per-variant tables ---
+    # --- Compute deltas/summaries for EVERY variant (main set + full layer
+    #     sweep) -- needed later by Table 5.3 / layerwise_boxplot even though
+    #     those extra layers are not written into the tables/plots below. ---
     all_deltas: dict = {}
     all_summaries: dict = {}
 
     for e in variant_experiments:
         all_deltas[e] = {}
         all_summaries[e] = {}
+        for key, label, higher_is_better in METRICS:
+            deltas = per_dataset_deltas(baseline, runs[e], key, higher_is_better)
+            all_deltas[e][key] = deltas
+            all_summaries[e][key] = summarize(deltas)
+
+    # --- Per-variant tables (main comparison set only: Full / Attention-only
+    #     / MLP-only / Layer-wise layer 0 -- NOT the layer 6/11/17/23 sweep) ---
+    for e in main_variants:
         common = sorted(set(baseline) & set(runs[e]))
 
         lines.append(f"## Table -- {display_name(e)} vs Baseline\n")
         lines.append("| Metric | Mean baseline | Mean variant | Mean difference | Wins | Ties | Losses |")
         lines.append("|---|---|---|---|---|---|---|")
         for key, label, higher_is_better in METRICS:
-            deltas = per_dataset_deltas(baseline, runs[e], key, higher_is_better)
-            all_deltas[e][key] = deltas
-            s = summarize(deltas)
-            all_summaries[e][key] = s
+            s = all_summaries[e][key]
             mean_baseline = sum(baseline[d][key] for d in common) / len(common) if common else float("nan")
             mean_variant = sum(runs[e][d][key] for d in common) / len(common) if common else float("nan")
             lines.append(
@@ -234,7 +255,7 @@ def main():
         "Mean Δ ROC-AUC [95% CI] | Mean Δ Negative Log Loss [95% CI] |"
     )
     lines.append("|---|---|---|---|---|---|")
-    for e in variant_experiments:
+    for e in main_variants:
         n = all_summaries[e]["acc"]["n"]
         row = f"| {display_name(e)} | {n} "
         for key, _, _ in METRICS:
@@ -253,7 +274,7 @@ def main():
         "Median Δ Negative Log Loss |"
     )
     lines.append("|---|---|---|---|---|")
-    for e in variant_experiments:
+    for e in main_variants:
         row = f"| {display_name(e)} "
         for key, _, _ in METRICS:
             row += f"| {fmt(all_summaries[e][key]['median'], 5)} "
@@ -262,17 +283,18 @@ def main():
     lines.append("")
 
     # --- Table 5.6: Common-subset comparison (fair, same datasets for all) ---
-    # Only datasets present in the baseline AND every fine-tuning variant --
-    # the strictest possible comparison, so no strategy is compared on an
+    # Only datasets present in the baseline AND every fine-tuning variant in
+    # the MAIN comparison set (layers 6/11/17/23 excluded, same as Table 5.5)
+    # -- the strictest possible comparison, so no strategy is compared on an
     # easier or harder subset of datasets than any other.
     common_all = set(baseline)
-    for e in variant_experiments:
+    for e in main_variants:
         common_all &= set(runs[e])
     common_all = sorted(common_all)
 
     lines.append(
         "## Table 5.6 -- Common-Subset Comparison "
-        f"(only datasets present in baseline + all {len(variant_experiments)} strategies, "
+        f"(only datasets present in baseline + all {len(main_variants)} strategies, "
         f"n={len(common_all)})\n"
     )
     if len(common_all) < 5:
@@ -288,7 +310,7 @@ def main():
         lines.append("|---|---|---|---|---|")
         common_summaries: dict = {}
         common_deltas_subset: dict = {}
-        for e in variant_experiments:
+        for e in main_variants:
             common_summaries[e] = {}
             common_deltas_subset[e] = {}
             row = f"| {display_name(e)} "
@@ -311,7 +333,7 @@ def main():
 
         lines.append("| Strategy | Wins | Ties | Losses | (Accuracy, on common subset) |")
         lines.append("|---|---|---|---|---|")
-        for e in variant_experiments:
+        for e in main_variants:
             s = common_summaries[e]["acc"]
             lines.append(f"| {display_name(e)} | {s['wins']} | {s['ties']} | {s['losses']} | n={s['n']} |")
         lines.append("")
@@ -356,11 +378,14 @@ def main():
 
     # --- Plot 1 (Figure 5.1): Boxplots of per-dataset deltas, one panel per metric ---
     # 2x2 grid: Accuracy / Balanced Accuracy / ROC-AUC / Negative Log Loss.
+    # Main comparison set only (Full / Attention-only / MLP-only / Layer-wise
+    # layer 0) -- the layer 6/11/17/23 sweep points are NOT included here,
+    # they live only in layerwise_boxplot / Table 5.3.
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     axes_flat = axes.flatten()
-    labels = [display_name(e) for e in variant_experiments]
+    labels = [display_name(e) for e in main_variants]
     for ax, (key, label, _) in zip(axes_flat, METRICS):
-        data = [list(all_deltas[e][key].values()) or [0.0] for e in variant_experiments]
+        data = [list(all_deltas[e][key].values()) or [0.0] for e in main_variants]
         ax.boxplot(data)
         ax.set_xticklabels(labels, rotation=40, ha="right")
         ax.axhline(0, color="red", linestyle="--", linewidth=1)
@@ -377,10 +402,12 @@ def main():
     print(f"Boxplot saved to: {plot1_path}, {plot1_pdf_path} and {plot1_svg_path}")
 
     # --- Plot 2: Stacked bar chart of wins/ties/losses (accuracy) ---
+    # Main comparison set only, same as Plot 1 -- unchanged in content/layout
+    # apart from dropping the layer 6/11/17/23 sweep points.
     fig, ax = plt.subplots(figsize=(8, 5))
-    wins = [all_summaries[e]["acc"]["wins"] for e in variant_experiments]
-    ties = [all_summaries[e]["acc"]["ties"] for e in variant_experiments]
-    losses = [all_summaries[e]["acc"]["losses"] for e in variant_experiments]
+    wins = [all_summaries[e]["acc"]["wins"] for e in main_variants]
+    ties = [all_summaries[e]["acc"]["ties"] for e in main_variants]
+    losses = [all_summaries[e]["acc"]["losses"] for e in main_variants]
     x = np.arange(len(labels))
     ax.bar(x, wins, label="Wins", color="#4CAF50")
     ax.bar(x, ties, bottom=wins, label="Ties", color="#9E9E9E")
