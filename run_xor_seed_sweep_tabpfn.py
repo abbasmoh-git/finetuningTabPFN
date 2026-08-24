@@ -1,71 +1,44 @@
 """
-run_xor_sanity_check.py
-------------------------
-Synthetic XOR sanity check for the TabPFN v3 fine-tuning pipeline.
+run_xor_seed_sweep_tabpfn.py
+------------------------------
+Controlled XOR seed sweep for the TabPFN v3 fine-tuning pipeline: SAME
+sample size (n=800) across all 5 datasets, only the random seed varies
+(1, 2, 3, 4, 5). This isolates seed-to-seed variance from size-to-seed
+variance, unlike run_xor_sanity_check.py, which varied both seed and size
+together across its 5 configs.
 
-Why this exists
-----------------
-The TabArena benchmark results (results/thesis_report/tables.md, Table 5.5 /
-5.6) show close-to-zero deltas for every fine-tuning strategy on real-world
-tabular datasets. Before concluding "fine-tuning has no measurable effect",
-this script checks that the pipeline itself CAN move the needle at all when
-a task genuinely benefits from fine-tuning: TabPFN v3's pretrained
-in-context learning is not designed for a hard, non-linear XOR/checkerboard
-decision boundary, so if fine-tuning is implemented correctly it should
-produce a large, clearly non-zero effect here. A near-zero effect on THIS
-task (unlike on TabArena) would point to a pipeline bug rather than a
-genuine "fine-tuning doesn't help on tabular data" finding.
+Relationship to run_xor_sanity_check.py
+------------------------------------------
+This script is a copy of run_xor_sanity_check.py with only the dataset
+sweep (XOR_CONFIGS) and output directory changed:
+  * `make_xor()` -- copied verbatim, unchanged, identical to the other
+    script (same source: notebooks/decision_boundary_xor_tabpfn_v3.ipynb).
+  * TabPFNFinetuner engine (finetuning_engine.py) -- unchanged, unmodified.
+  * main.py -- unchanged, unmodified. Only imported (carve_out_validation,
+    preprocess_features, encode_labels_train_only, run_no_finetuning,
+    run_own_finetuning), never edited.
+  * Hyperparameters (learning_rate=1e-4, num_epochs=200, weight_decay=0.01,
+    max_context_size=3000, n_estimators=8) -- identical to
+    run_xor_sanity_check.py, for direct comparability.
+  * The 4 fine-tuning strategies (full / attention-only / mlp-only /
+    layer-wise block 0) -- identical.
 
-XOR generation -- reused verbatim, not reinvented
----------------------------------------------------
-`make_xor()` below is copied VERBATIM (same parameters, same logic, same
-default values) from the project's reference notebook
-`notebooks/decision_boundary_xor_tabpfn_v3.ipynb`, per explicit instruction
-to reuse that exact formulation rather than inventing a different
-XOR/checkerboard definition. Do not modify this function without first
-checking that notebook. (An earlier version of this docstring attributed
-this notebook to a specific person by name; that attribution was incorrect
-and has been removed.)
+Output isolation
+-------------------
+Writes ONLY to results/xor_seed_sweep_tabpfn_n800/ -- a new directory. This
+script never imports or calls anything that writes under
+results/finetuning_experiments/ (TabArena), results/thesis_report/ (report
+generator), or results/xor_sanity_check/ (the original XOR sanity check).
+Running this script cannot alter or overwrite any of those.
 
-Fine-tuning hyperparameters -- LEARNING RATE, DELIBERATELY DIFFERENT FROM TABARENA
-------------------------------------------------------------------------------------
-This script uses the TabPFNFinetuner engine (finetuning_engine.py) with
-num_epochs=200, weight_decay=0.01, max_context_size=3000, n_estimators=8 --
-i.e. otherwise exactly config_own_finetuning.py / config_attention_only_finetuning.py
-/ config_mlp_only_finetuning.py / config_layerwise_finetuning.py, just
-pointed at XOR data instead of an OpenML task.
-
-LEARNING RATE: XOR_LEARNING_RATE = 1e-4, matching the reference notebook's
-own demo configuration (decision_boundary_xor_tabpfn_v3.ipynb), NOT the
-1e-5 used in the main TabArena experiments. This was flagged as a
-discrepancy before running (the original instruction was to keep "the same
-main hyperparameters as the TabArena experiments, including learning rate
-1e-5, unless the reference notebook explicitly requires a different
-setting") and deliberately resolved in favour of 1e-4, on the reasoning
-that this script's purpose is to reproduce the XOR sanity check from that
-notebook specifically, not another TabArena-style run -- so matching its
-reference setting takes priority here. That notebook also used
-query_ratio=0.3, epochs=50, patience=20, grad_clip=1.0, warmup_proportion=0.1,
-none of which TabPFNFinetuner implements (it uses max_context_size's
-proportional split for validation instead, and has no early stopping or
-gradient clipping) -- so this is not a byte-for-byte reproduction of that
-notebook, only a same-engine, same-learning-rate approximation of it.
-
-Guarantee: existing TabArena results untouched
-------------------------------------------------
-This script never imports/calls anything that writes under
-results/finetuning_experiments/ (the TabArena experiment root) or
-results/thesis_report/ (the report generator's output). All output goes to
-results/xor_sanity_check/, a directory this script owns exclusively:
-
-  results/xor_sanity_check/
+  results/xor_seed_sweep_tabpfn_n800/
     xor_configs.json   -- the 5 dataset configs (seed, size, ...) for reproducibility
     results.pkl         -- full nested results (all metrics, all strategies, all datasets)
     summary.md           -- compact baseline vs. fine-tuned table + deltas
 
 Usage
 -----
-    python run_xor_sanity_check.py
+    python run_xor_seed_sweep_tabpfn.py
 """
 
 import json
@@ -85,11 +58,10 @@ from main import (
     run_own_finetuning,
 )
 
-OUTPUT_DIR = Path("results/xor_sanity_check")
+OUTPUT_DIR = Path("results/xor_seed_sweep_tabpfn_n800")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# --- TabArena-consistent hyperparameters (see module docstring for the
-#     learning_rate discrepancy vs. the reference notebook's own demo) ---
+# --- Identical to run_xor_sanity_check.py, for direct comparability ---
 XOR_LEARNING_RATE = 1e-4
 XOR_NUM_EPOCHS = 200
 XOR_WEIGHT_DECAY = 0.01
@@ -104,9 +76,9 @@ SPLIT_SEED = 42
 
 
 # ---------------------------------------------------------------------------
-# XOR generation -- copied verbatim from
-# notebooks/decision_boundary_xor_tabpfn_v3.ipynb.
-# Do not edit without checking the source notebook first.
+# XOR generation -- copied verbatim, unchanged, from
+# notebooks/decision_boundary_xor_tabpfn_v3.ipynb (same source as
+# run_xor_sanity_check.py). Do not edit without checking the source notebook.
 # ---------------------------------------------------------------------------
 N_FEATURES = 10  # total number of features (checker label uses first 2; rest are noise)
 
@@ -144,22 +116,22 @@ def make_xor(n_samples: int = 400, noise: float = 0.01, n_features: int = N_FEAT
 
 
 # ---------------------------------------------------------------------------
-# 5 XOR dataset variants (varying seed and/or size), stored to JSON for
-# reproducibility. noise/n_features/gap held fixed at the reference
-# notebook's defaults; only random_state and n_samples vary across the 5 variants.
+# 5 XOR dataset variants -- CONTROLLED sweep: n_samples fixed at 800,
+# only random_state varies (1, 2, 3, 4, 5). noise/n_features/gap held fixed
+# at the reference notebook's defaults, same as run_xor_sanity_check.py.
 # ---------------------------------------------------------------------------
 XOR_CONFIGS = [
-    {"name": "xor_seed42_n400",   "n_samples": 400, "noise": 0.01, "n_features": N_FEATURES, "random_state": 42,   "gap": 0.01},
-    {"name": "xor_seed123_n400",  "n_samples": 400, "noise": 0.01, "n_features": N_FEATURES, "random_state": 123,  "gap": 0.01},
-    {"name": "xor_seed7_n800",    "n_samples": 800, "noise": 0.01, "n_features": N_FEATURES, "random_state": 7,    "gap": 0.01},
-    {"name": "xor_seed2026_n200", "n_samples": 200, "noise": 0.01, "n_features": N_FEATURES, "random_state": 2026, "gap": 0.01},
-    {"name": "xor_seed99_n600",   "n_samples": 600, "noise": 0.01, "n_features": N_FEATURES, "random_state": 99,   "gap": 0.01},
+    {"name": "xor_seed1_n800", "n_samples": 800, "noise": 0.01, "n_features": N_FEATURES, "random_state": 1, "gap": 0.01},
+    {"name": "xor_seed2_n800", "n_samples": 800, "noise": 0.01, "n_features": N_FEATURES, "random_state": 2, "gap": 0.01},
+    {"name": "xor_seed3_n800", "n_samples": 800, "noise": 0.01, "n_features": N_FEATURES, "random_state": 3, "gap": 0.01},
+    {"name": "xor_seed4_n800", "n_samples": 800, "noise": 0.01, "n_features": N_FEATURES, "random_state": 4, "gap": 0.01},
+    {"name": "xor_seed5_n800", "n_samples": 800, "noise": 0.01, "n_features": N_FEATURES, "random_state": 5, "gap": 0.01},
 ]
 
 # ---------------------------------------------------------------------------
-# Fine-tuning strategies -- the same 4 selective variants used in the
+# Fine-tuning strategies -- identical to run_xor_sanity_check.py / the
 # TabArena experiments (see configs/config_{own,attention_only,mlp_only,
-# layerwise}_finetuning.py). Layer-wise uses block 0 only, as instructed.
+# layerwise}_finetuning.py). Layer-wise uses block 0 only.
 # ---------------------------------------------------------------------------
 STRATEGIES = {
     "full_finetuning": dict(
@@ -262,12 +234,16 @@ def summarize_and_save(all_results: dict):
         json.dump(XOR_CONFIGS, f, indent=2)
 
     lines = []
-    lines.append("# XOR Sanity Check -- Baseline vs. Fine-Tuning\n")
+    lines.append("# XOR Controlled Seed Sweep (n=800) -- Baseline vs. Fine-Tuning\n")
     lines.append(
         f"Learning rate used: {XOR_LEARNING_RATE} (1e-4), following the XOR configuration "
-        "used in the project's reference notebook (decision_boundary_xor_tabpfn_v3.ipynb). "
-        "The main TabArena experiments used 1e-5 -- see module docstring in "
-        "run_xor_sanity_check.py for the full discussion of this deliberate difference.\n"
+        "used in the project's reference notebook (decision_boundary_xor_tabpfn_v3.ipynb), "
+        "identical to run_xor_sanity_check.py. The main TabArena experiments used 1e-5.\n"
+    )
+    lines.append(
+        "All 5 datasets use n_samples=800; only random_state (1-5) varies, isolating "
+        "seed-to-seed variance from the size-to-seed confound present in "
+        "run_xor_sanity_check.py's original 5-dataset sweep.\n"
     )
     lines.append(
         "| Dataset | Strategy | Accuracy | Bal. Accuracy | ROC-AUC | Neg. Log Loss | "
