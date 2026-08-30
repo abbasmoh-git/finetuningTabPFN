@@ -402,19 +402,35 @@ def main():
     print(f"Boxplot saved to: {plot1_path}, {plot1_pdf_path} and {plot1_svg_path}")
 
     # --- Plot 2: Stacked bar chart of wins/ties/losses (accuracy) ---
-    # Main comparison set only, same as Plot 1 -- unchanged in content/layout
-    # apart from dropping the layer 6/11/17/23 sweep points.
+    # This figure ONLY (not Plot 1 / the tables) uses all 8 configurations,
+    # in a fixed, explicitly requested x-axis order, with shortened
+    # "Layer X" labels instead of "Layer-wise (layer X)" for readability.
+    # Values/calculations are unchanged -- only the ordering and labels
+    # shown on this one figure.
+    wtl_order = [
+        ("attention_only",    "Attention-only"),
+        ("layerwise_layer0",  "Layer 0"),
+        ("layerwise_layer6",  "Layer 6"),
+        ("layerwise_layer11", "Layer 11"),
+        ("layerwise_layer17", "Layer 17"),
+        ("layerwise_layer23", "Layer 23"),
+        ("mlp_only",          "MLP-only"),
+        ("own_finetuning",    "Full FT"),
+    ]
+    wtl_experiments = [(e, lbl) for e, lbl in wtl_order if e in all_summaries]
+    wtl_labels = [lbl for _, lbl in wtl_experiments]
+
     fig, ax = plt.subplots(figsize=(8, 5))
-    wins = [all_summaries[e]["acc"]["wins"] for e in main_variants]
-    ties = [all_summaries[e]["acc"]["ties"] for e in main_variants]
-    losses = [all_summaries[e]["acc"]["losses"] for e in main_variants]
-    x = np.arange(len(labels))
+    wins = [all_summaries[e]["acc"]["wins"] for e, _ in wtl_experiments]
+    ties = [all_summaries[e]["acc"]["ties"] for e, _ in wtl_experiments]
+    losses = [all_summaries[e]["acc"]["losses"] for e, _ in wtl_experiments]
+    x = np.arange(len(wtl_labels))
     ax.bar(x, wins, label="Wins", color="#4CAF50")
     ax.bar(x, ties, bottom=wins, label="Ties", color="#9E9E9E")
     bottom2 = [w + t for w, t in zip(wins, ties)]
     ax.bar(x, losses, bottom=bottom2, label="Losses", color="#E53935")
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=30, ha="right")
+    ax.set_xticklabels(wtl_labels, rotation=30, ha="right")
     ax.set_ylabel("Number of datasets (based on accuracy)")
     ax.set_title("Wins / Ties / Losses vs Baseline (Accuracy)")
     ax.legend()
