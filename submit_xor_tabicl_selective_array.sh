@@ -2,7 +2,7 @@
 #SBATCH --job-name=xor_tabicl_selective
 #SBATCH --partition=ext_vwl_norm
 #SBATCH --gres=gpu:1
-#SBATCH --time=04:00:00
+#SBATCH --time=02:00:00
 #SBATCH --array=1-5
 #SBATCH --output=logs/xor_tabicl_selective_%A_%a.out
 #SBATCH --error=logs/xor_tabicl_selective_%A_%a.err
