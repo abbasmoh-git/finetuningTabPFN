@@ -42,7 +42,7 @@ results_root = Path("results/finetuning_experiments")
 output_dir = Path("results/thesis_report")
 output_dir.mkdir(parents=True, exist_ok=True)
 
-TIE_THRESHOLD = 0.005  # |delta| below this counts as a tie, not a win/loss
+TIE_THRESHOLD = 0.0001  # |delta| below this counts as a tie, not a win/loss
 BASELINE_METHOD = "no_finetuning"
 
 # (internal key, display label, higher_is_better)
