@@ -16,10 +16,10 @@
 
 | Metric | Mean baseline | Mean variant | Mean difference | Wins | Ties | Losses |
 |---|---|---|---|---|---|---|
-| Accuracy | 0.8673 | 0.8674 | 0.00010 | 0 | 30 | 0 |
-| Balanced Accuracy | 0.7169 | 0.7172 | 0.00026 | 1 | 28 | 1 |
-| ROC-AUC | 0.8663 | 0.8667 | 0.00035 | 0 | 30 | 0 |
-| Negative Log Loss | -0.3137 | -0.3131 | 0.00056 | 0 | 30 | 0 |
+| Accuracy | 0.8673 | 0.8674 | 0.00010 | 8 | 13 | 9 |
+| Balanced Accuracy | 0.7169 | 0.7172 | 0.00026 | 14 | 6 | 10 |
+| ROC-AUC | 0.8663 | 0.8667 | 0.00035 | 16 | 10 | 4 |
+| Negative Log Loss | -0.3137 | -0.3131 | 0.00056 | 18 | 9 | 3 |
 
 (compared on 30 datasets present in both baseline and this run)
 
@@ -27,10 +27,10 @@
 
 | Metric | Mean baseline | Mean variant | Mean difference | Wins | Ties | Losses |
 |---|---|---|---|---|---|---|
-| Accuracy | 0.8673 | 0.8673 | -0.00002 | 0 | 30 | 0 |
-| Balanced Accuracy | 0.7169 | 0.7170 | 0.00008 | 0 | 29 | 1 |
-| ROC-AUC | 0.8663 | 0.8663 | -0.00002 | 0 | 30 | 0 |
-| Negative Log Loss | -0.3137 | -0.3136 | 0.00006 | 0 | 30 | 0 |
+| Accuracy | 0.8673 | 0.8673 | -0.00002 | 5 | 16 | 9 |
+| Balanced Accuracy | 0.7169 | 0.7170 | 0.00008 | 13 | 10 | 7 |
+| ROC-AUC | 0.8663 | 0.8663 | -0.00002 | 9 | 14 | 7 |
+| Negative Log Loss | -0.3137 | -0.3136 | 0.00006 | 13 | 10 | 7 |
 
 (compared on 30 datasets present in both baseline and this run)
 
@@ -38,10 +38,10 @@
 
 | Metric | Mean baseline | Mean variant | Mean difference | Wins | Ties | Losses |
 |---|---|---|---|---|---|---|
-| Accuracy | 0.8673 | 0.8675 | 0.00019 | 0 | 30 | 0 |
-| Balanced Accuracy | 0.7169 | 0.7173 | 0.00042 | 0 | 30 | 0 |
-| ROC-AUC | 0.8663 | 0.8667 | 0.00038 | 0 | 30 | 0 |
-| Negative Log Loss | -0.3137 | -0.3131 | 0.00060 | 1 | 29 | 0 |
+| Accuracy | 0.8673 | 0.8675 | 0.00019 | 12 | 9 | 9 |
+| Balanced Accuracy | 0.7169 | 0.7173 | 0.00042 | 15 | 7 | 8 |
+| ROC-AUC | 0.8663 | 0.8667 | 0.00038 | 15 | 11 | 4 |
+| Negative Log Loss | -0.3137 | -0.3131 | 0.00060 | 17 | 8 | 5 |
 
 (compared on 30 datasets present in both baseline and this run)
 
@@ -49,10 +49,10 @@
 
 | Metric | Mean baseline | Mean variant | Mean difference | Wins | Ties | Losses |
 |---|---|---|---|---|---|---|
-| Accuracy | 0.8535 | 0.8535 | 0.00004 | 0 | 26 | 0 |
-| Balanced Accuracy | 0.7161 | 0.7163 | 0.00024 | 1 | 25 | 0 |
-| ROC-AUC | 0.8579 | 0.8581 | 0.00017 | 0 | 26 | 0 |
-| Negative Log Loss | -0.3428 | -0.3423 | 0.00058 | 1 | 25 | 0 |
+| Accuracy | 0.8535 | 0.8535 | 0.00004 | 11 | 6 | 9 |
+| Balanced Accuracy | 0.7161 | 0.7163 | 0.00024 | 12 | 7 | 7 |
+| ROC-AUC | 0.8579 | 0.8581 | 0.00017 | 11 | 7 | 8 |
+| Negative Log Loss | -0.3428 | -0.3423 | 0.00058 | 14 | 4 | 8 |
 
 (compared on 26 datasets present in both baseline and this run)
 
@@ -89,10 +89,10 @@
 
 | Strategy | Wins | Ties | Losses | (Accuracy, on common subset) |
 |---|---|---|---|---|
-| Attention-only | 0 | 26 | 0 | n=26 |
-| Layer-wise (layer 0) | 0 | 26 | 0 | n=26 |
-| MLP-only | 0 | 26 | 0 | n=26 |
-| Full fine-tuning | 0 | 26 | 0 | n=26 |
+| Attention-only | 6 | 12 | 8 | n=26 |
+| Layer-wise (layer 0) | 4 | 13 | 9 | n=26 |
+| MLP-only | 10 | 8 | 8 | n=26 |
+| Full fine-tuning | 11 | 6 | 9 | n=26 |
 
 Datasets included in the common subset: Amazon_employee_access, Bank_Customer_Churn, E-CommereShippingData, Fitness_Club, HR_Analytics_Job_Change_of_Data_Scientists, Is-this-a-good-customer, MIC, Marketing_Campaign, anneal, bank-marketing, blood-transfusion-service-center, churn, credit-g, credit_card_clients_default, diabetes, hazelnut-spread-contaminant-detection, heloc, in_vehicle_coupon_recommendation, jm1, maternal_health_risk, online_shoppers_intention, qsar-biodeg, seismic-bumps, splice, students_dropout_and_academic_success, website_phishing
 
